@@ -17,7 +17,7 @@ function generateFakeFeedback(imageCount) {
     const score = Math.floor(65 + Math.random() * 25); // 65–90%
     scores.push(score);
     feedback.push([
-      "✅ Good lighting",
+      "✅ Good lightinggg",
       "❌ Avoid group photos",
       "💡 Try smiling more",
     ]);
