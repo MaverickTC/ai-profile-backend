@@ -14,12 +14,12 @@
     OPENAI_API_KEY=sk-...
 */
 
-import express from 'express';
-import cors from 'cors';
-import bodyParser from 'body-parser';
-import sharp from 'sharp';
-import 'dotenv/config';
-import OpenAI from 'openai';
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const sharp = require('sharp');
+require('dotenv').config();
+const { OpenAI } = require('openai');
 
 // ────────────────────────────────────────────────────────────────────────────────
 // OpenAI client
