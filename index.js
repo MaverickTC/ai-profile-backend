@@ -135,9 +135,12 @@ AI's assessment:
 ${assessment}
 
 Important guidelines:
-- Be context-aware: If the photo shows an activity (like sports, climbing, etc.), don't penalize for not looking at the camera
+- Be context-aware: For photos that is hard to follow the rules such as looking at camera, making face more visible, etc.
+  * Do NOT suggest looking at camera
+  * Do NOT suggest making face more visible if it would be unrealistic
+  * Focus on the positive aspects of showing interests/activities
 - If this is already a strong photo (score > 75), focus on what makes it effective with 1-2 genuine compliments and small feedback for better version of THIS PHOTO
-- Only provide improvement suggestions if truly needed
+- Only provide improvement suggestions if truly needed and realistic
 
 Based on this SINGLE photo only:
 - Do NOT suggest adding more photos or diversity
@@ -145,7 +148,7 @@ Based on this SINGLE photo only:
 - Focus ONLY on what's visible in THIS image
 - Start each point with emojis like ✅, ❌, or 💡
 - Be honest - if the photo is already good, say so instead of inventing problems
-- Maximum 3 points total, each point must be one or two short sentence`;
+- Maximum 3 points total, each point must be one or two short sentence;
 
   try {
     const response = await anthropic.messages.create({
