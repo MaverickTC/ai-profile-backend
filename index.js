@@ -104,9 +104,9 @@ function compositeScore(featuresData) {
   );
 
   const rawScore = positiveScore - penalties;
-  const adjustedScore = 0.7 * rawScore + 0.3;
+  const adjustedScore = 0.9 * rawScore + 0.2;
 
-  return Math.max(0, Math.min(1, adjustedScore));
+  return Math.max(0.2, Math.min(1, adjustedScore));
 }
 
 async function generateFeedback(featuresData, score, imageBuffer) {
@@ -124,7 +124,7 @@ async function generateFeedback(featuresData, score, imageBuffer) {
     throw new Error(`Image too large: ${imageSizeInMB.toFixed(2)}MB. Must be under 3.5MB.`);
   }
 
-  const features = featuresData.features;
+  //const features = featuresData.features;
   const assessment = featuresData.assessment;
 
   const systemPrompt = `You are a concise, kind dating photo coach.
@@ -133,7 +133,7 @@ The photo has a score of ${score}/100.
 AI's assessment:
 ${assessment}
 
-If this is already a strong photo (score > 75), focus on what makes it effective with 1-2 genuine compliments.
+If this is already a strong photo (score > 75), focus on what makes it effective with 1-2 genuine compliments and small feedback for better version of THIS PHOTO.
 Only provide improvement suggestions if truly needed.
 
 Based on this SINGLE photo only:
@@ -141,7 +141,7 @@ Based on this SINGLE photo only:
 - Focus ONLY on what's visible in THIS image
 - Start each point with emojis like ✅, ❌, or 💡
 - Be honest - if the photo is already good, say so instead of inventing problems
-- Maximum 3 points total, each point should be a at most two short sentence`;
+- Maximum 3 points total, each point must be one or two short sentence`;
 
   try {
     const response = await anthropic.messages.create({
