@@ -87,8 +87,8 @@ function compositeScore(featuresData) {
 
   let gazeScore = 0;
   if (f.gazeDeg <= 15) gazeScore = 1;
-  else if (f.gazeDeg <= 45) gazeScore = 0.6;
-  else gazeScore = 0.3;
+  else if (f.gazeDeg <= 45) gazeScore = 0.8;
+  else gazeScore = 0.6;
 
   const positiveScore = (
     WEIGHTS.quality * norm(f.quality, 40, 100) +
@@ -134,11 +134,14 @@ The photo has a score of ${score}/100.
 AI's assessment:
 ${assessment}
 
-If this is already a strong photo (score > 75), focus on what makes it effective with 1-2 genuine compliments and small feedback for better version of THIS PHOTO.
-Only provide improvement suggestions if truly needed.
+Important guidelines:
+- Be context-aware: If the photo shows an activity (like sports, climbing, etc.), don't penalize for not looking at the camera
+- If this is already a strong photo (score > 75), focus on what makes it effective with 1-2 genuine compliments and small feedback for better version of THIS PHOTO
+- Only provide improvement suggestions if truly needed
 
 Based on this SINGLE photo only:
 - Do NOT suggest adding more photos or diversity
+- Do NOT mention photo ordering or sequencing
 - Focus ONLY on what's visible in THIS image
 - Start each point with emojis like ✅, ❌, or 💡
 - Be honest - if the photo is already good, say so instead of inventing problems
@@ -226,11 +229,7 @@ app.post('/analyze', upload.array('images'), async (req, res) => {
       }
     }
 
-    const order = results
-      .map((r, i) => ({ i, score: r.score }))
-      .sort((a, b) => b.score - a.score)
-      .map(o => o.i);
-
+    // Remove ordering logic - we'll just return results in the order they were uploaded
     const scores = results.map(r => r.score);
     const feedback = results.map(r => r.feedbackLines);
     const features = results.map(r => r.features);
@@ -240,7 +239,6 @@ app.post('/analyze', upload.array('images'), async (req, res) => {
       version: "v1.0",
       scores,
       feedback,
-      order,
       features,
       assessments
     });
