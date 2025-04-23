@@ -148,7 +148,7 @@ Based on this SINGLE photo only:
 - Focus ONLY on what's visible in THIS image
 - Start each point with emojis like ✅, ❌, or 💡
 - Be honest - if the photo is already good, say so instead of inventing problems
-- Maximum 3 points total, each point must be one or two short sentence;
+- Maximum 3 points total, each point must be one or two short sentence;`;
 
   try {
     const response = await anthropic.messages.create({
