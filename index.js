@@ -4,6 +4,7 @@ const bodyParser = require('body-parser');
 const sharp = require('sharp');
 require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
+const multer = require('multer');
 
 // Replace OpenAI with Anthropic/Claude
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
@@ -179,28 +180,30 @@ Based on this SINGLE photo only:
   }
 }
 
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit per file
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(bodyParser.json({ limit: '15mb' }));
+app.use(bodyParser.json());
 
-app.post('/analyze', async (req, res) => {
-  const { images } = req.body;
-
-  if (!Array.isArray(images) || images.length === 0) {
-    return res.status(400).json({ error: 'images must be a non-empty array' });
+// New endpoint that handles multipart form data
+app.post('/analyze', upload.array('images'), async (req, res) => {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: 'No images uploaded' });
   }
 
   try {
     const results = [];
 
-    for (const b64 of images) {
+    for (const file of req.files) {
       try {
-        const base64Data = b64.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
+        const buffer = file.buffer;
         
-        // We'll resize in the individual functions now
         const featData = await extractFeatures(buffer); 
         const score = Math.round(compositeScore(featData) * 100);
         const feedbackLines = await generateFeedback(featData, score, buffer);
@@ -212,7 +215,7 @@ app.post('/analyze', async (req, res) => {
           assessment: featData.assessment 
         });
       } catch (imageError) {
-        // Handle individual image errors without failing the entire request
+        // Handle individual image errors
         console.error(`Error processing image: ${imageError.message}`);
         results.push({
           score: 0,
@@ -246,8 +249,7 @@ app.post('/analyze', async (req, res) => {
     console.error("Server error:", err);
     res.status(500).json({ 
       error: 'analysis-failed', 
-      details: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      details: err.message
     });
   }
 });
