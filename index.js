@@ -181,94 +181,6 @@ Based on this SINGLE photo only:
   }
 }
 
-async function analyzeBio(bio) {
-  if (!bio || bio.trim() === '') {
-    return [];
-  }
-
-  const systemPrompt = `You are a dating profile bio evaluator. Analyze this dating profile bio and provide 2-3 specific, actionable pieces of feedback.
-  
-For each point:
-- Start with an emoji (✅ for positive aspects, 💡 for suggestions, ❌ for issues to fix)
-- Be concise but specific
-- Focus on content, authenticity, and engagement
-- If the bio is already strong, acknowledge that and provide minor improvements
-- If the bio needs work, be constructive and kind
-
-Respond with a list of feedback points, each on a new line.`;
-
-  try {
-    const response = await anthropic.messages.create({
-      model: "claude-3-7-sonnet-20250219",
-      max_tokens: 250,
-      system: systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `Here's the dating profile bio to evaluate:\n\n${bio}`
-            }
-          ]
-        }
-      ],
-      temperature: 0.7
-    });
-
-    const content = response.content[0].text;
-    const feedbackLines = content.trim().split(/\n+/);
-    return feedbackLines.length > 0 ? feedbackLines : ["✅ Your bio looks good! Consider adding more details about your interests."];
-  } catch (error) {
-    console.error("Error analyzing bio:", error);
-    return ["❌ Error analyzing bio. Please try again."];
-  }
-}
-
-async function analyzePrompts(prompts) {
-  if (!prompts || prompts.length === 0) {
-    return [];
-  }
-
-  const systemPrompt = `You are a dating profile prompt evaluator. Analyze these dating profile prompts and provide 2-3 specific, actionable pieces of feedback.
-  
-For each point:
-- Start with an emoji (✅ for positive aspects, 💡 for suggestions, ❌ for issues to fix)
-- Be concise but specific
-- Focus on uniqueness, authenticity, and conversation-starting potential
-- If the prompts are already strong, acknowledge that and provide minor improvements
-- If the prompts need work, be constructive and kind
-
-Respond with a list of feedback points, each on a new line.`;
-
-  try {
-    const response = await anthropic.messages.create({
-      model: "claude-3-7-sonnet-20250219",
-      max_tokens: 250,
-      system: systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `Here are the dating profile prompts to evaluate:\n\n${prompts.join('\n')}`
-            }
-          ]
-        }
-      ],
-      temperature: 0.7
-    });
-
-    const content = response.content[0].text;
-    const feedbackLines = content.trim().split(/\n+/);
-    return feedbackLines.length > 0 ? feedbackLines : ["✅ Your prompts look good! They should help start conversations."];
-  } catch (error) {
-    console.error("Error analyzing prompts:", error);
-    return ["❌ Error analyzing prompts. Please try again."];
-  }
-}
-
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit per file
@@ -280,7 +192,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-// Update the /analyze endpoint to handle bio and prompts
+// Fix the field name to match what's coming from the client
 app.post('/analyze', upload.any(), async (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: 'No images uploaded' });
@@ -288,30 +200,7 @@ app.post('/analyze', upload.any(), async (req, res) => {
 
   try {
     const results = [];
-    let bioFeedback = [];
-    let promptsFeedback = [];
 
-    // Process bio if provided
-    if (req.body.bio) {
-      bioFeedback = await analyzeBio(req.body.bio);
-    }
-
-    // Process prompts if provided
-    if (req.body.prompts) {
-      let prompts = [];
-      try {
-        prompts = JSON.parse(req.body.prompts);
-      } catch (e) {
-        // If not valid JSON, try treating it as a single prompt
-        prompts = [req.body.prompts];
-      }
-      
-      if (prompts.length > 0) {
-        promptsFeedback = await analyzePrompts(prompts);
-      }
-    }
-
-    // Process images (existing code)
     for (const file of req.files) {
       try {
         const buffer = file.buffer;
@@ -354,9 +243,7 @@ app.post('/analyze', upload.any(), async (req, res) => {
       feedback,
       order,
       features,
-      assessments,
-      bioFeedback,
-      promptsFeedback
+      assessments
     });
 
   } catch (err) {
