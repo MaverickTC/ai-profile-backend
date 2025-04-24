@@ -199,9 +199,8 @@ app.post('/analyze', upload.any(), async (req, res) => {
   }
 
   try {
-    const results = [];
-
-    for (const file of req.files) {
+    // Process all images in parallel instead of sequentially
+    const promises = req.files.map(async (file) => {
       try {
         const buffer = file.buffer;
         
@@ -209,23 +208,26 @@ app.post('/analyze', upload.any(), async (req, res) => {
         const score = Math.round(compositeScore(featData) * 100);
         const feedbackLines = await generateFeedback(featData, score, buffer);
 
-        results.push({ 
+        return { 
           score, 
           feedbackLines, 
           features: featData.features,
           assessment: featData.assessment 
-        });
+        };
       } catch (imageError) {
         // Handle individual image errors
         console.error(`Error processing image: ${imageError.message}`);
-        results.push({
+        return {
           score: 0,
           feedbackLines: [`❌ Error: ${imageError.message}`],
           features: {},
           assessment: "Could not analyze this image."
-        });
+        };
       }
-    }
+    });
+
+    // Wait for all promises to resolve
+    const results = await Promise.all(promises);
 
     const order = results
       .map((r, i) => ({ i, score: r.score }))
