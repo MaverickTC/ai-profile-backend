@@ -36,7 +36,7 @@ async function extractFeatures(buffer) {
 
 1. quality (40–100)
 2. aesthetics (3–10)
-3. smileProb (-0.5 – 1)
+3. smileProb (-0.5 – 1) - if face not visible value is 0.6
 4. gazeDeg (0–90)
 5. redFlag (true/false)
 6. petFlag (true/false)
@@ -87,8 +87,8 @@ function compositeScore(featuresData) {
 
   let gazeScore = 0;
   if (f.gazeDeg <= 15) gazeScore = 1;
-  else if (f.gazeDeg <= 45) gazeScore = 0.8;
-  else gazeScore = 0.6;
+  else if (f.gazeDeg <= 45) gazeScore = 0.6;
+  else gazeScore = 0.3;
 
   const positiveScore = (
     WEIGHTS.quality * norm(f.quality, 40, 100) +
@@ -134,21 +134,16 @@ The photo has a score of ${score}/100.
 AI's assessment:
 ${assessment}
 
-Important guidelines:
-- Be context-aware: For photos that is hard to follow the rules such as looking at camera, making face more visible, etc.
-  * Do NOT suggest looking at camera
-  * Do NOT suggest making face more visible if it would be unrealistic
-  * Focus on the positive aspects of showing interests/activities
-- If this is already a strong photo (score > 75), focus on what makes it effective with 1-2 genuine compliments and small feedback for better version of THIS PHOTO
-- Only provide improvement suggestions if truly needed and realistic
+If this is already a strong photo (score > 75), focus on what makes it effective with 1-2 genuine compliments and small feedback for better version of THIS PHOTO.
+Only provide improvement suggestions if truly needed.
+If face is not visible but context makes it hard to follow the rules such as looking at camera, making face more visible, etc., then do not penalize and do not complain or suggest.
 
 Based on this SINGLE photo only:
 - Do NOT suggest adding more photos or diversity
-- Do NOT mention photo ordering or sequencing
 - Focus ONLY on what's visible in THIS image
 - Start each point with emojis like ✅, ❌, or 💡
 - Be honest - if the photo is already good, say so instead of inventing problems
-- Maximum 3 points total, each point must be one or two short sentence;`;
+- Maximum 3 points total, each point must be one or two short sentence`;
 
   try {
     const response = await anthropic.messages.create({
@@ -186,6 +181,94 @@ Based on this SINGLE photo only:
   }
 }
 
+async function analyzeBio(bio) {
+  if (!bio || bio.trim() === '') {
+    return [];
+  }
+
+  const systemPrompt = `You are a dating profile bio evaluator. Analyze this dating profile bio and provide 2-3 specific, actionable pieces of feedback.
+  
+For each point:
+- Start with an emoji (✅ for positive aspects, 💡 for suggestions, ❌ for issues to fix)
+- Be concise but specific
+- Focus on content, authenticity, and engagement
+- If the bio is already strong, acknowledge that and provide minor improvements
+- If the bio needs work, be constructive and kind
+
+Respond with a list of feedback points, each on a new line.`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 250,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Here's the dating profile bio to evaluate:\n\n${bio}`
+            }
+          ]
+        }
+      ],
+      temperature: 0.7
+    });
+
+    const content = response.content[0].text;
+    const feedbackLines = content.trim().split(/\n+/);
+    return feedbackLines.length > 0 ? feedbackLines : ["✅ Your bio looks good! Consider adding more details about your interests."];
+  } catch (error) {
+    console.error("Error analyzing bio:", error);
+    return ["❌ Error analyzing bio. Please try again."];
+  }
+}
+
+async function analyzePrompts(prompts) {
+  if (!prompts || prompts.length === 0) {
+    return [];
+  }
+
+  const systemPrompt = `You are a dating profile prompt evaluator. Analyze these dating profile prompts and provide 2-3 specific, actionable pieces of feedback.
+  
+For each point:
+- Start with an emoji (✅ for positive aspects, 💡 for suggestions, ❌ for issues to fix)
+- Be concise but specific
+- Focus on uniqueness, authenticity, and conversation-starting potential
+- If the prompts are already strong, acknowledge that and provide minor improvements
+- If the prompts need work, be constructive and kind
+
+Respond with a list of feedback points, each on a new line.`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 250,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Here are the dating profile prompts to evaluate:\n\n${prompts.join('\n')}`
+            }
+          ]
+        }
+      ],
+      temperature: 0.7
+    });
+
+    const content = response.content[0].text;
+    const feedbackLines = content.trim().split(/\n+/);
+    return feedbackLines.length > 0 ? feedbackLines : ["✅ Your prompts look good! They should help start conversations."];
+  } catch (error) {
+    console.error("Error analyzing prompts:", error);
+    return ["❌ Error analyzing prompts. Please try again."];
+  }
+}
+
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit per file
@@ -197,15 +280,38 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-// New endpoint that handles multipart form data
-app.post('/analyze', upload.array('images'), async (req, res) => {
+// Update the /analyze endpoint to handle bio and prompts
+app.post('/analyze', upload.any(), async (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: 'No images uploaded' });
   }
 
   try {
     const results = [];
+    let bioFeedback = [];
+    let promptsFeedback = [];
 
+    // Process bio if provided
+    if (req.body.bio) {
+      bioFeedback = await analyzeBio(req.body.bio);
+    }
+
+    // Process prompts if provided
+    if (req.body.prompts) {
+      let prompts = [];
+      try {
+        prompts = JSON.parse(req.body.prompts);
+      } catch (e) {
+        // If not valid JSON, try treating it as a single prompt
+        prompts = [req.body.prompts];
+      }
+      
+      if (prompts.length > 0) {
+        promptsFeedback = await analyzePrompts(prompts);
+      }
+    }
+
+    // Process images (existing code)
     for (const file of req.files) {
       try {
         const buffer = file.buffer;
@@ -232,7 +338,11 @@ app.post('/analyze', upload.array('images'), async (req, res) => {
       }
     }
 
-    // Remove ordering logic - we'll just return results in the order they were uploaded
+    const order = results
+      .map((r, i) => ({ i, score: r.score }))
+      .sort((a, b) => b.score - a.score)
+      .map(o => o.i);
+
     const scores = results.map(r => r.score);
     const feedback = results.map(r => r.feedbackLines);
     const features = results.map(r => r.features);
@@ -242,8 +352,11 @@ app.post('/analyze', upload.array('images'), async (req, res) => {
       version: "v1.0",
       scores,
       feedback,
+      order,
       features,
-      assessments
+      assessments,
+      bioFeedback,
+      promptsFeedback
     });
 
   } catch (err) {
