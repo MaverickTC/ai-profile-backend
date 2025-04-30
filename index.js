@@ -399,35 +399,53 @@ app.post('/analyze', upload.any(), async (req, res) => {
   }
 
   try {
-    const results = [];
-
-    for (const file of req.files) {
+    // Map each file to a promise that resolves with its analysis result or error
+    const analysisPromises = req.files.map(async (file) => {
       try {
         const buffer = file.buffer;
-
-        const featData = await extractFeatures(buffer); 
+        const featData = await extractFeatures(buffer);
         const score = Math.round(compositeScore(featData) * 100);
+        // Note: generateFeedback also makes an API call
         const feedbackLines = await generateFeedback(featData, score, buffer);
 
-        results.push({ 
-          score, 
-          feedbackLines, 
-          features: featData.features,
-          assessment: featData.assessment,
-          photoType: featData.photoType
-        });
+        return {
+          status: 'fulfilled', // Explicitly mark success for easier processing later
+          value: {
+            score,
+            feedbackLines,
+            features: featData.features,
+            assessment: featData.assessment,
+            photoType: featData.photoType
+          }
+        };
       } catch (imageError) {
-        console.error(`Error processing image: ${imageError.message}`);
-        results.push({
-          score: 0,
-          feedbackLines: [`❌ Error: ${imageError.message}`],
-          features: {},
-          assessment: "Could not analyze this image.",
-          photoType: "generic"
-        });
+        console.error(`Error processing image ${file.originalname}: ${imageError.message}`);
+        // Return a specific structure for errors
+        return {
+          status: 'rejected',
+          reason: imageError.message,
+          value: { // Provide default structure for consistency
+            score: 0,
+            feedbackLines: [`❌ Error processing this image: ${imageError.message}`],
+            features: {},
+            assessment: "Could not analyze this image.",
+            photoType: "generic"
+          }
+        };
       }
-    }
+    });
 
+    // Wait for all analysis promises to settle (either succeed or fail)
+    const settledResults = await Promise.allSettled(analysisPromises);
+
+    // Process the results from Promise.allSettled
+    const results = settledResults.map(result => {
+        // If the promise was fulfilled, use its value.
+        // If it was rejected, we structured the rejection to include a default value.
+        return result.value;
+    });
+
+    // Calculate order based on scores (indices correspond to the original req.files order)
     const order = results
       .map((r, i) => ({ i, score: r.score }))
       .sort((a, b) => b.score - a.score)
@@ -440,7 +458,7 @@ app.post('/analyze', upload.any(), async (req, res) => {
     const photoTypes = results.map(r => r.photoType);
 
     res.json({
-      version: "v1.1",
+      version: "v1.1", // Consider updating version if behavior changes significantly
       scores,
       feedback,
       order,
@@ -450,9 +468,10 @@ app.post('/analyze', upload.any(), async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Server error:", err);
-    res.status(500).json({ 
-      error: 'analysis-failed', 
+    // Catch errors not related to individual image processing
+    console.error("Server error in /analyze:", err);
+    res.status(500).json({
+      error: 'analysis-failed',
       details: err.message
     });
   }
@@ -464,60 +483,89 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
   }
 
   try {
-    const results = [];
-
-    // Analyze each uploaded image
-    for (const file of req.files) {
+    // Map each file to a promise that extracts features
+    const featurePromises = req.files.map(async (file) => {
       try {
         const buffer = file.buffer;
-        const featData = await extractFeatures(buffer); 
-        const score = Math.round(compositeScore(featData) * 100);
-        
-        // Store analysis results with original file information
-        results.push({ 
-          score,
-          features: featData.features,
-          assessment: featData.assessment,
-          photoType: featData.photoType,
-          filename: file.originalname,
-          buffer: buffer
-        });
+        // Only extract features concurrently here
+        const featData = await extractFeatures(buffer);
+        return {
+          status: 'fulfilled',
+          value: { // Include original file info needed later
+            features: featData.features,
+            assessment: featData.assessment,
+            photoType: featData.photoType,
+            filename: file.originalname,
+            buffer: buffer // Keep buffer if needed, or remove if only features/score are used
+          }
+        };
       } catch (imageError) {
-        console.error(`Error processing image: ${imageError.message}`);
-        results.push({
-          score: 0,
-          features: {},
-          assessment: "Could not analyze this image.",
-          photoType: "generic",
-          filename: file.originalname,
-          error: imageError.message
-        });
+        console.error(`Error extracting features for ${file.originalname}: ${imageError.message}`);
+        return {
+          status: 'rejected',
+          reason: imageError.message,
+          value: { // Default structure for failed analysis
+            score: 0, // Will be calculated later, but set default
+            features: {},
+            assessment: "Could not analyze this image.",
+            photoType: "generic",
+            filename: file.originalname,
+            error: imageError.message
+          }
+        };
       }
-    }
+    });
 
-    // --- NEW SELECTION LOGIC ---
+    // Wait for all feature extraction promises to settle
+    const settledFeatureResults = await Promise.allSettled(featurePromises);
+
+    // Process results: calculate scores for successful ones, handle failures
+    const analysisResults = settledFeatureResults.map(result => {
+      if (result.status === 'fulfilled') {
+        const data = result.value;
+        // Calculate score synchronously after features are extracted
+        const score = Math.round(compositeScore(data) * 100);
+        return { ...data, score }; // Add score to the fulfilled value
+      } else {
+        // Use the default structure provided in the rejection
+        return result.value;
+      }
+    });
+
+    // Filter out images that failed analysis before selection
+    const successfulResults = analysisResults.filter(r => !r.error);
+
+    // --- SELECTION LOGIC (using successfulResults) ---
     const selected = [];
+    const usedFilenames = new Set(); // Use filename or another unique ID if available
 
     // 4a. guarantee each slot (best-scoring photo of that type)
     SLOT_ORDER.forEach(slot => {
-      const best = results
-          .filter(r => r.photoType === slot)
+      const best = successfulResults
+          .filter(r => r.photoType === slot && !usedFilenames.has(r.filename))
           .sort((a,b) => b.score - a.score)[0];
-      if (best) selected.push(best);
+      if (best) {
+          selected.push(best);
+          usedFilenames.add(best.filename);
+      }
     });
 
     // 4b. fill remaining slots (up to 6) with highest scores not chosen yet
-    results
-      .filter(r => !selected.includes(r))
+    successfulResults
+      .filter(r => !usedFilenames.has(r.filename))
       .sort((a,b) => b.score - a.score)
       .slice(0, 6 - selected.length)
-      .forEach(r => selected.push(r));
+      .forEach(r => {
+          selected.push(r);
+          usedFilenames.add(r.filename); // Ensure we don't add duplicates here either
+      });
 
-    // Generate profile optimization feedback
+    // Generate profile optimization feedback using only the selected images
+    // This is a single API call after all image processing and selection is done
     const profileFeedback = await generateProfileFeedback(selected);
 
     res.json({
-      version: "v1.1",
+      version: "v1.1", // Consider updating version
       selectedImages: selected.map(img => ({
         filename: img.filename,
         score: img.score,
@@ -526,13 +574,15 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
         photoType: img.photoType
       })),
       profileFeedback,
-      totalImagesAnalyzed: results.length
+      totalImagesAnalyzed: analysisResults.length, // Include failed ones in the count
+      successfulAnalyses: successfulResults.length
     });
 
   } catch (err) {
-    console.error("Server error:", err);
-    res.status(500).json({ 
-      error: 'profile-optimization-failed', 
+    // Catch errors not related to individual image processing or selection
+    console.error("Server error in /optimize-profile:", err);
+    res.status(500).json({
+      error: 'profile-optimization-failed',
       details: err.message
     });
   }
