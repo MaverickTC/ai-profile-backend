@@ -81,7 +81,7 @@ const CONTEXT_OVERRIDES = {
   }
 };
 
-// Desired slots in priority order
+// Desired slots in priority order (can be used as guidance for the AI)
 const SLOT_ORDER = [
   "primary_headshot",
   "full_body",
@@ -484,6 +484,103 @@ app.post('/analyze', upload.any(), async (req, res) => {
   }
 });
 
+// NEW FUNCTION: Uses AI to select and order photos based on analysis data
+async function getAISelectedOrderAndFeedback(analyzedPhotos) {
+  if (!analyzedPhotos || analyzedPhotos.length === 0) {
+    return {
+      optimalOrder: [],
+      profileFeedback: "No photos available for selection."
+    };
+  }
+
+  // Prepare the input for the AI prompt
+  const photoDescriptions = analyzedPhotos.map(photo => {
+    // Include original index for identification
+    return `Photo Index ${photo.index}:
+  - Score: ${photo.score}/100
+  - Type: ${photo.photoType}
+  - AI Assessment: ${photo.assessment}`;
+  }).join('\n\n');
+
+  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of up to 6 photos from the following list and determine the best display order for a dating profile.
+
+Consider these criteria for selection and ordering:
+1.  **Overall Quality & Appeal:** Use the provided 'Score' as a primary guide. Higher scores are generally better.
+2.  **Photo Type Diversity:** Aim for a good mix of photo types (e.g., headshot, full body, activity, social). Use the 'Type' field. Prioritize including at least one strong 'primary_headshot' if available. Refer to this preferred type order: ${SLOT_ORDER.join(', ')}.
+3.  **Content & Narrative:** Read the 'AI Assessment' for each photo. Avoid selecting photos that are too visually similar or repetitive in theme (e.g., multiple very similar selfies, multiple shots of the exact same hobby). Choose photos that collectively paint a well-rounded, appealing picture of the person.
+4.  **Optimal Order:** Arrange the selected photos logically. Typically, start with the strongest 'primary_headshot', followed by engaging full-body or activity shots. The order should create a compelling visual flow.
+
+Available Photos:
+${photoDescriptions}
+
+Instructions:
+- Select a maximum of 6 photos.
+- If fewer than 6 photos are available, select all of them.
+- Provide your response ONLY as a JSON object containing two keys:
+  - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing the chosen photos in the optimal display order.
+  - "reasoning": A concise explanation (2-4 sentences) justifying your selection and ordering, highlighting the strengths of the chosen set (like diversity, narrative, key photo placements).
+
+Example JSON Output:
+\`\`\`json
+{
+  "selected_order": [1, 4, 0, 5, 2],
+  "reasoning": "Starts with a strong headshot (1), followed by an engaging activity shot (4) and a clear full-body photo (0). Includes social proof (5) and a pet photo (2) for warmth, creating a well-rounded profile."
+}
+\`\`\`
+
+Provide only the JSON object in your response.`;
+
+  try {
+    // Use a capable model. Consider gemini-1.5-pro-latest if flash isn't sufficient.
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+
+    const result = await model.generateContent({
+      contents: [{
+        role: "user",
+        parts: [{ text: systemPrompt }]
+      }],
+      generationConfig: {
+        temperature: 0.5, // Lower temp for more deterministic selection/ordering
+        maxOutputTokens: 800, // Allow enough tokens for reasoning and indices
+        responseMimeType: "application/json", // Request JSON output directly
+      }
+    });
+
+    const response = result.response;
+    const responseText = response.text();
+
+    // Parse the JSON response
+    const parsedResult = JSON.parse(responseText);
+
+    if (!parsedResult.selected_order || !parsedResult.reasoning) {
+        throw new Error("AI response missing required 'selected_order' or 'reasoning' keys.");
+    }
+
+    // Basic validation: ensure selected_order is an array of numbers
+    if (!Array.isArray(parsedResult.selected_order) || !parsedResult.selected_order.every(n => typeof n === 'number')) {
+        throw new Error("AI response 'selected_order' is not an array of numbers.");
+    }
+
+    console.log("AI Selection Reasoning:", parsedResult.reasoning);
+
+    return {
+      optimalOrder: parsedResult.selected_order,
+      profileFeedback: parsedResult.reasoning
+    };
+
+  } catch (error) {
+    console.error("Error calling Gemini API for profile curation:", error);
+    console.error("Prompt sent to AI:", systemPrompt); // Log the prompt for debugging
+    // Fallback or re-throw
+    // For now, let's return a generic error message, but you could implement a fallback here
+     return {
+       optimalOrder: analyzedPhotos.sort((a, b) => b.score - a.score).map(p => p.index).slice(0, 6), // Simple fallback: top 6 by score
+       profileFeedback: `Error: Could not get AI-driven feedback (${error.message}). Showing photos sorted by score.`
+     };
+    // throw new Error(`Failed to get AI selection: ${error.message}`); // Or re-throw
+  }
+}
+
 app.post('/optimize-profile', upload.any(), async (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: 'No images uploaded' });
@@ -491,22 +588,28 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
 
   try {
     // Map each file to a promise that extracts features or throws an error
-    const featurePromises = req.files.map(async (file) => {
+    // Add original index to each file object before mapping
+    const filesWithIndex = req.files.map((file, index) => ({ ...file, originalIndex: index }));
+
+    const featurePromises = filesWithIndex.map(async (file) => {
       try {
         const buffer = file.buffer;
         const featData = await extractFeatures(buffer);
-        // On success, return the data object with buffer/filename
+        // On success, return the data object with buffer/filename/index
         return {
+          index: file.originalIndex, // Keep track of the original index
           features: featData.features,
           assessment: featData.assessment,
           photoType: featData.photoType,
           filename: file.originalname,
-          buffer: buffer // Keep buffer for potential later use if needed
+          buffer: buffer // Keep buffer temporarily if needed, maybe remove later
         };
       } catch (imageError) {
-        // Log the error and add filename context
-        console.error(`Error extracting features for ${file.originalname}: ${imageError.message}`);
-        imageError.filename = file.originalname; // Add filename for context later
+        // Log the error and add filename/index context
+        const filename = file.originalname || `image ${file.originalIndex + 1}`;
+        console.error(`Error extracting features for ${filename}: ${imageError.message}`);
+        imageError.filename = filename; // Add filename for context later
+        imageError.index = file.originalIndex; // Add index for context
         // Throw the error so Promise.allSettled catches it as 'rejected'
         throw imageError;
       }
@@ -516,18 +619,24 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
     const settledFeatureResults = await Promise.allSettled(featurePromises);
 
     // Process results: calculate scores for successful ones, handle failures
-    const analysisResults = settledFeatureResults.map((result, index) => {
+    const analysisResults = settledFeatureResults.map((result, i) => {
+      // Get original index, fallback if needed (shouldn't be necessary with above changes)
+      const originalIndex = filesWithIndex[i]?.originalIndex ?? i;
+      const filename = filesWithIndex[i]?.originalname || `image ${originalIndex + 1}`;
+
       if (result.status === 'fulfilled') {
         const data = result.value;
         // Calculate score synchronously after features are extracted
         const score = Math.round(compositeScore(data) * 100);
-        return { ...data, score }; // Add score to the fulfilled value
+        // Don't need buffer in the final analysis result unless specifically required later
+        const { buffer, ...restOfData } = data;
+        return { ...restOfData, score, error: null }; // Add score and null error
       } else {
         // Failure: construct the error object using the reason
         const reason = result.reason || new Error('Unknown feature extraction error');
-        const filename = reason.filename || req.files?.[index]?.originalname || `image ${index + 1}`;
         console.error(`Feature extraction failed for ${filename}: ${reason.message}`);
         return {
+          index: originalIndex,
           score: 0, // Default score for failed analysis
           features: {},
           assessment: `Could not analyze ${filename}.`,
@@ -538,56 +647,46 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
       }
     });
 
-    // Filter out images that failed analysis before selection
+    // Filter out images that failed analysis before AI selection
     const successfulResults = analysisResults.filter(r => !r.error);
 
-    // --- SELECTION LOGIC (using successfulResults) ---
-    const selected = [];
-    const usedFilenames = new Set();
+    // --- NEW AI SELECTION LOGIC ---
+    // Call the AI curator function with the successful results
+    const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(successfulResults);
 
-    // 4a. guarantee each slot (best-scoring photo of that type)
-    SLOT_ORDER.forEach(slot => {
-      const best = successfulResults
-          .filter(r => r.photoType === slot && !usedFilenames.has(r.filename))
-          .sort((a,b) => b.score - a.score)[0];
-      if (best) {
-          selected.push(best);
-          usedFilenames.add(best.filename);
-      }
-    });
+    // --- REMOVED OLD SELECTION LOGIC ---
+    // const selected = [];
+    // const usedFilenames = new Set();
+    // ... (old SLOT_ORDER loop and filling logic removed) ...
+    // --- REMOVED OLD FEEDBACK GENERATION ---
+    // const profileFeedback = await generateProfileFeedback(selected); // Removed
 
-    // 4b. fill remaining slots (up to 6) with highest scores not chosen yet
-    successfulResults
-      .filter(r => !usedFilenames.has(r.filename))
-      .sort((a,b) => b.score - a.score)
-      .slice(0, 6 - selected.length)
-      .forEach(r => {
-          selected.push(r);
-          usedFilenames.add(r.filename); // Ensure we don't add duplicates here either
-      });
-
-    // Generate profile optimization feedback using only the selected images
-    const profileFeedback = await generateProfileFeedback(selected);
+    // Map the AI's optimalOrder (indices) back to the full analysis results
+    // Create a map for quick lookup
+    const resultsMap = new Map(analysisResults.map(r => [r.index, r]));
+    const orderedSelectedImages = optimalOrder
+        .map(index => resultsMap.get(index))
+        .filter(Boolean); // Filter out any potential undefined if AI returns invalid index
 
     res.json({
-      version: "v1.1",
-      selectedImages: selected.map(img => ({
+      version: "v1.2-AI-Selection", // Update version indicator
+      // Return the selected images in the order determined by the AI
+      selectedImages: orderedSelectedImages.map(img => ({
         filename: img.filename,
         score: img.score,
         features: img.features,
         assessment: img.assessment,
-        photoType: img.photoType
-        // Note: buffer is not included in the response
+        photoType: img.photoType,
+        originalIndex: img.index // Include original index if useful for frontend
       })),
-      profileFeedback,
+      profileFeedback, // Feedback comes directly from the AI curator
       totalImagesAnalyzed: analysisResults.length,
       successfulAnalyses: successfulResults.length,
-      // Optionally include details about failed analyses
-      failedAnalyses: analysisResults.filter(r => r.error).map(r => ({ filename: r.filename, error: r.error }))
+      failedAnalyses: analysisResults.filter(r => r.error).map(r => ({ filename: r.filename, error: r.error, index: r.index }))
     });
 
   } catch (err) {
-    // Catch errors not related to individual image processing or selection
+    // Catch errors not related to individual image processing or AI selection
     console.error("Server error in /optimize-profile:", err);
     res.status(500).json({
       error: 'profile-optimization-failed',
@@ -595,53 +694,6 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
     });
   }
 });
-
-async function generateProfileFeedback(selectedImages) {
-  // Create a prompt that describes the selected images
-  const imagesDescription = selectedImages.map((img, index) => {
-    return `Image ${index + 1} (Score: ${img.score}/100): ${img.assessment}`;
-  }).join('\n\n');
-
-  const systemPrompt = `You are a dating profile optimization expert. Based on the following 
-selected images for a dating profile, provide strategic advice on how to arrange them and 
-what each image contributes to the overall profile.
-
-SELECTED IMAGES:
-${imagesDescription}
-
-Provide feedback on:
-1. The optimal order to arrange these photos
-2. What each photo contributes to the profile
-3. Any gaps or improvements that could be made with these specific photos
-
-CRITICAL RULES:
-- DO NOT suggest adding different photos or replacing these photos
-- Focus ONLY on optimizing the arrangement and presentation of THESE specific photos
-- Be concise and practical in your advice
-- Start with a brief overall assessment, then provide 3-5 specific recommendations`;
-
-  try {
-    // Initialize Gemini model
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
-
-    const result = await model.generateContent({
-      contents: [{ 
-        role: "user", 
-        parts: [{ text: systemPrompt }]
-      }],
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 500,
-      }
-    });
-
-    const response = result.response;
-    return response.text().trim();
-  } catch (error) {
-    console.error("Error generating profile feedback:", error);
-    return "Could not generate profile optimization feedback due to an error.";
-  }
-}
 
 app.post('/analyze-single', upload.single('image'), async (req, res) => {
   if (!req.file) {
@@ -673,191 +725,6 @@ app.post('/analyze-single', upload.single('image'), async (req, res) => {
     });
   }
 });
-
-app.post('/optimize-selection', bodyParser.json(), async (req, res) => {
-  try {
-    const { photos } = req.body;
-    
-    if (!photos || !Array.isArray(photos) || photos.length === 0) {
-      return res.status(400).json({ 
-        error: 'invalid-request', 
-        details: 'Photos array is required' 
-      });
-    }
-
-    console.log(`Optimizing selection for ${photos.length} photos`);
-    
-    // Step 1: Ensure we have all required data for each photo
-    const validPhotos = photos.filter(photo => 
-      photo.index !== undefined && 
-      photo.score !== undefined && 
-      photo.photoType !== undefined
-    );
-    
-    if (validPhotos.length === 0) {
-      return res.status(400).json({ 
-        error: 'invalid-data', 
-        details: 'No valid photos provided' 
-      });
-    }
-
-    // Step 2: Select optimal photos
-    const selectedIndices = selectOptimalPhotos(validPhotos);
-    
-    // Step 3: Generate feedback about the selection
-    const profileFeedback = generateSelectionFeedback(validPhotos, selectedIndices);
-    
-    // Return the results
-    res.json({
-      version: "v1.0",
-      optimalOrder: selectedIndices,
-      profileFeedback
-    });
-
-  } catch (err) {
-    console.error("Error optimizing selection:", err);
-    res.status(500).json({ 
-      error: 'optimization-failed', 
-      details: err.message
-    });
-  }
-});
-
-// Function to select optimal photos based on role diversity and scores
-function selectOptimalPhotos(photos) {
-  // Maximum number of photos to select
-  const MAX_PHOTOS = 6;
-  
-  // Slot weights for scoring (higher weight for earlier positions)
-  const SLOT_WEIGHTS = [1.3, 1.15, 1.1, 1.05, 1.0, 0.95];
-  
-  // Desired slots in priority order
-  const SLOT_ORDER = [
-    "primary_headshot",
-    "full_body",
-    "hobby_activity",
-    "pet",
-    "group_social"
-  ];
-  
-  // Step 1: If we have 6 or fewer photos, use all of them sorted by score
-  if (photos.length <= MAX_PHOTOS) {
-    return photos
-      .sort((a, b) => b.score - a.score)
-      .map(photo => photo.index);
-  }
-  
-  // Step 2: Select best photo for each role in priority order
-  const selectedPhotos = [];
-  const usedIndices = new Set();
-  
-  for (const role of SLOT_ORDER) {
-    // Find best photo of this role that's not already selected
-    const bestForRole = photos
-      .filter(photo => 
-        photo.photoType === role && 
-        !usedIndices.has(photo.index)
-      )
-      .sort((a, b) => b.score - a.score)[0];
-    
-    if (bestForRole) {
-      selectedPhotos.push(bestForRole);
-      usedIndices.add(bestForRole.index);
-      
-      // Stop if we've selected MAX_PHOTOS
-      if (selectedPhotos.length >= MAX_PHOTOS) {
-        break;
-      }
-    }
-  }
-  
-  // Step 3: Fill remaining slots with highest scoring photos not yet selected
-  if (selectedPhotos.length < MAX_PHOTOS) {
-    const remainingPhotos = photos
-      .filter(photo => !usedIndices.has(photo.index))
-      .sort((a, b) => b.score - a.score);
-    
-    for (const photo of remainingPhotos) {
-      selectedPhotos.push(photo);
-      usedIndices.add(photo.index);
-      
-      if (selectedPhotos.length >= MAX_PHOTOS) {
-        break;
-      }
-    }
-  }
-  
-  // Step 4: Calculate weighted scores for final ordering
-  const weightedPhotos = selectedPhotos.map(photo => ({
-    ...photo,
-    weightedScore: photo.score * (SLOT_WEIGHTS[selectedPhotos.indexOf(photo)] || 1)
-  }));
-  
-  // Return indices in order of weighted score
-  return weightedPhotos
-    .sort((a, b) => b.weightedScore - a.weightedScore)
-    .map(photo => photo.index);
-}
-
-// Function to generate feedback about the photo selection
-function generateSelectionFeedback(allPhotos, selectedIndices) {
-  // Get the selected photos
-  const selectedPhotos = selectedIndices.map(index => 
-    allPhotos.find(photo => photo.index === index)
-  ).filter(Boolean);
-  
-  // Count the number of each photo type
-  const typeCounts = {};
-  for (const photo of selectedPhotos) {
-    typeCounts[photo.photoType] = (typeCounts[photo.photoType] || 0) + 1;
-  }
-  
-  // Calculate the average score
-  const avgScore = selectedPhotos.reduce((sum, photo) => sum + photo.score, 0) / selectedPhotos.length;
-  
-  // Generate feedback based on the selection
-  let feedback = `Your profile has an average photo score of ${Math.round(avgScore)}/100. `;
-  
-  // Check for role diversity
-  const uniqueRoles = Object.keys(typeCounts).length;
-  if (uniqueRoles >= 4) {
-    feedback += "You have excellent photo diversity showing different aspects of your life. ";
-  } else if (uniqueRoles >= 3) {
-    feedback += "You have good photo diversity, but could benefit from more variety. ";
-  } else {
-    feedback += "Your profile would benefit from more diverse photos showing different aspects of your life. ";
-  }
-  
-  // Add specific role feedback
-  if (typeCounts["primary_headshot"] >= 1) {
-    feedback += "✅ You have a strong headshot which is essential. ";
-  } else {
-    feedback += "💡 Consider adding a clear headshot where your face is visible. ";
-  }
-  
-  if (typeCounts["full_body"] >= 1) {
-    feedback += "✅ Your full body photo helps show your style. ";
-  }
-  
-  if (typeCounts["hobby_activity"] >= 1) {
-    feedback += "✅ Activity photos show your interests and personality. ";
-  }
-  
-  if (typeCounts["pet"] >= 1) {
-    feedback += "✅ Pet photos often increase engagement. ";
-  }
-  
-  if (typeCounts["group_social"] >= 1) {
-    feedback += "✅ Social photos show you're well-connected. ";
-  }
-  
-  // Add ordering advice
-  feedback += "\n\nRecommended photo order: ";
-  feedback += "Start with your strongest headshot, followed by full body and activity photos. ";
-  feedback += "This order has been optimized based on both photo quality and type diversity.";
-  
-  return feedback;
-}
 
 app.listen(PORT, () => {
   console.log(`✅ Dating Photo Coach running on http://localhost:${PORT}`);
