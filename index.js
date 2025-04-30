@@ -399,58 +399,65 @@ app.post('/analyze', upload.any(), async (req, res) => {
   }
 
   try {
-    // Map each file to a promise that resolves with its analysis result or error
+    // Map each file to a promise that resolves with its analysis result or throws an error
     const analysisPromises = req.files.map(async (file) => {
       try {
         const buffer = file.buffer;
         const featData = await extractFeatures(buffer);
         const score = Math.round(compositeScore(featData) * 100);
-        // Note: generateFeedback also makes an API call
         const feedbackLines = await generateFeedback(featData, score, buffer);
 
+        // On success, return the data object directly
         return {
-          status: 'fulfilled', // Explicitly mark success for easier processing later
-          value: {
-            score,
-            feedbackLines,
-            features: featData.features,
-            assessment: featData.assessment,
-            photoType: featData.photoType
-          }
+          score,
+          feedbackLines,
+          features: featData.features,
+          assessment: featData.assessment,
+          photoType: featData.photoType
         };
       } catch (imageError) {
+        // Log the error and add filename context
         console.error(`Error processing image ${file.originalname}: ${imageError.message}`);
-        // Return a specific structure for errors
+        imageError.filename = file.originalname; // Add filename for context later
+        // Throw the error so Promise.allSettled catches it as 'rejected'
+        throw imageError;
+      }
+    });
+
+    // Wait for all analysis promises to settle
+    const settledResults = await Promise.allSettled(analysisPromises);
+
+    // Process the results from Promise.allSettled
+    const results = settledResults.map((result, index) => {
+      if (result.status === 'fulfilled') {
+        // Success: use the resolved value
+        return result.value;
+      } else {
+        // Failure: construct the error object using the reason
+        const reason = result.reason || new Error('Unknown analysis error');
+        // Attempt to get filename from error or fallback to original file array
+        const filename = reason.filename || req.files?.[index]?.originalname || `image ${index + 1}`;
+        // Log the specific failure reason here
+        console.error(`Analysis failed for ${filename}: ${reason.message}`);
         return {
-          status: 'rejected',
-          reason: imageError.message,
-          value: { // Provide default structure for consistency
-            score: 0,
-            feedbackLines: [`❌ Error processing this image: ${imageError.message}`],
-            features: {},
-            assessment: "Could not analyze this image.",
-            photoType: "generic"
-          }
+          score: null, // Use null for score on error
+          feedbackLines: [`❌ Error processing ${filename}: ${reason.message}`],
+          features: null,
+          assessment: `Could not analyze ${filename}.`,
+          photoType: "generic",
+          error: reason.message // Include error message
         };
       }
     });
 
-    // Wait for all analysis promises to settle (either succeed or fail)
-    const settledResults = await Promise.allSettled(analysisPromises);
-
-    // Process the results from Promise.allSettled
-    const results = settledResults.map(result => {
-        // If the promise was fulfilled, use its value.
-        // If it was rejected, we structured the rejection to include a default value.
-        return result.value;
-    });
-
     // Calculate order based on scores (indices correspond to the original req.files order)
+    // Handle potential null scores during sorting by treating them as lowest score
     const order = results
-      .map((r, i) => ({ i, score: r.score }))
+      .map((r, i) => ({ i, score: r.score ?? -1 })) // Use -1 for null scores for sorting
       .sort((a, b) => b.score - a.score)
       .map(o => o.i);
 
+    // Extract data arrays for the response
     const scores = results.map(r => r.score);
     const feedback = results.map(r => r.feedbackLines);
     const features = results.map(r => r.features);
@@ -458,7 +465,7 @@ app.post('/analyze', upload.any(), async (req, res) => {
     const photoTypes = results.map(r => r.photoType);
 
     res.json({
-      version: "v1.1", // Consider updating version if behavior changes significantly
+      version: "v1.1",
       scores,
       feedback,
       order,
@@ -468,7 +475,7 @@ app.post('/analyze', upload.any(), async (req, res) => {
     });
 
   } catch (err) {
-    // Catch errors not related to individual image processing
+    // Catch errors not related to individual image processing (e.g., server setup)
     console.error("Server error in /analyze:", err);
     res.status(500).json({
       error: 'analysis-failed',
@@ -483,36 +490,25 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
   }
 
   try {
-    // Map each file to a promise that extracts features
+    // Map each file to a promise that extracts features or throws an error
     const featurePromises = req.files.map(async (file) => {
       try {
         const buffer = file.buffer;
-        // Only extract features concurrently here
         const featData = await extractFeatures(buffer);
+        // On success, return the data object with buffer/filename
         return {
-          status: 'fulfilled',
-          value: { // Include original file info needed later
-            features: featData.features,
-            assessment: featData.assessment,
-            photoType: featData.photoType,
-            filename: file.originalname,
-            buffer: buffer // Keep buffer if needed, or remove if only features/score are used
-          }
+          features: featData.features,
+          assessment: featData.assessment,
+          photoType: featData.photoType,
+          filename: file.originalname,
+          buffer: buffer // Keep buffer for potential later use if needed
         };
       } catch (imageError) {
+        // Log the error and add filename context
         console.error(`Error extracting features for ${file.originalname}: ${imageError.message}`);
-        return {
-          status: 'rejected',
-          reason: imageError.message,
-          value: { // Default structure for failed analysis
-            score: 0, // Will be calculated later, but set default
-            features: {},
-            assessment: "Could not analyze this image.",
-            photoType: "generic",
-            filename: file.originalname,
-            error: imageError.message
-          }
-        };
+        imageError.filename = file.originalname; // Add filename for context later
+        // Throw the error so Promise.allSettled catches it as 'rejected'
+        throw imageError;
       }
     });
 
@@ -520,15 +516,25 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
     const settledFeatureResults = await Promise.allSettled(featurePromises);
 
     // Process results: calculate scores for successful ones, handle failures
-    const analysisResults = settledFeatureResults.map(result => {
+    const analysisResults = settledFeatureResults.map((result, index) => {
       if (result.status === 'fulfilled') {
         const data = result.value;
         // Calculate score synchronously after features are extracted
         const score = Math.round(compositeScore(data) * 100);
         return { ...data, score }; // Add score to the fulfilled value
       } else {
-        // Use the default structure provided in the rejection
-        return result.value;
+        // Failure: construct the error object using the reason
+        const reason = result.reason || new Error('Unknown feature extraction error');
+        const filename = reason.filename || req.files?.[index]?.originalname || `image ${index + 1}`;
+        console.error(`Feature extraction failed for ${filename}: ${reason.message}`);
+        return {
+          score: 0, // Default score for failed analysis
+          features: {},
+          assessment: `Could not analyze ${filename}.`,
+          photoType: "generic",
+          filename: filename,
+          error: reason.message // Include error message
+        };
       }
     });
 
@@ -537,7 +543,7 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
 
     // --- SELECTION LOGIC (using successfulResults) ---
     const selected = [];
-    const usedFilenames = new Set(); // Use filename or another unique ID if available
+    const usedFilenames = new Set();
 
     // 4a. guarantee each slot (best-scoring photo of that type)
     SLOT_ORDER.forEach(slot => {
@@ -561,21 +567,23 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
       });
 
     // Generate profile optimization feedback using only the selected images
-    // This is a single API call after all image processing and selection is done
     const profileFeedback = await generateProfileFeedback(selected);
 
     res.json({
-      version: "v1.1", // Consider updating version
+      version: "v1.1",
       selectedImages: selected.map(img => ({
         filename: img.filename,
         score: img.score,
         features: img.features,
         assessment: img.assessment,
         photoType: img.photoType
+        // Note: buffer is not included in the response
       })),
       profileFeedback,
-      totalImagesAnalyzed: analysisResults.length, // Include failed ones in the count
-      successfulAnalyses: successfulResults.length
+      totalImagesAnalyzed: analysisResults.length,
+      successfulAnalyses: successfulResults.length,
+      // Optionally include details about failed analyses
+      failedAnalyses: analysisResults.filter(r => r.error).map(r => ({ filename: r.filename, error: r.error }))
     });
 
   } catch (err) {
