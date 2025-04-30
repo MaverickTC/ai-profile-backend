@@ -616,6 +616,191 @@ app.post('/analyze-single', upload.single('image'), async (req, res) => {
   }
 });
 
+app.post('/optimize-selection', bodyParser.json(), async (req, res) => {
+  try {
+    const { photos } = req.body;
+    
+    if (!photos || !Array.isArray(photos) || photos.length === 0) {
+      return res.status(400).json({ 
+        error: 'invalid-request', 
+        details: 'Photos array is required' 
+      });
+    }
+
+    console.log(`Optimizing selection for ${photos.length} photos`);
+    
+    // Step 1: Ensure we have all required data for each photo
+    const validPhotos = photos.filter(photo => 
+      photo.index !== undefined && 
+      photo.score !== undefined && 
+      photo.photoType !== undefined
+    );
+    
+    if (validPhotos.length === 0) {
+      return res.status(400).json({ 
+        error: 'invalid-data', 
+        details: 'No valid photos provided' 
+      });
+    }
+
+    // Step 2: Select optimal photos
+    const selectedIndices = selectOptimalPhotos(validPhotos);
+    
+    // Step 3: Generate feedback about the selection
+    const profileFeedback = generateSelectionFeedback(validPhotos, selectedIndices);
+    
+    // Return the results
+    res.json({
+      version: "v1.0",
+      optimalOrder: selectedIndices,
+      profileFeedback
+    });
+
+  } catch (err) {
+    console.error("Error optimizing selection:", err);
+    res.status(500).json({ 
+      error: 'optimization-failed', 
+      details: err.message
+    });
+  }
+});
+
+// Function to select optimal photos based on role diversity and scores
+function selectOptimalPhotos(photos) {
+  // Maximum number of photos to select
+  const MAX_PHOTOS = 6;
+  
+  // Slot weights for scoring (higher weight for earlier positions)
+  const SLOT_WEIGHTS = [1.3, 1.15, 1.1, 1.05, 1.0, 0.95];
+  
+  // Desired slots in priority order
+  const SLOT_ORDER = [
+    "primary_headshot",
+    "full_body",
+    "hobby_activity",
+    "pet",
+    "group_social"
+  ];
+  
+  // Step 1: If we have 6 or fewer photos, use all of them sorted by score
+  if (photos.length <= MAX_PHOTOS) {
+    return photos
+      .sort((a, b) => b.score - a.score)
+      .map(photo => photo.index);
+  }
+  
+  // Step 2: Select best photo for each role in priority order
+  const selectedPhotos = [];
+  const usedIndices = new Set();
+  
+  for (const role of SLOT_ORDER) {
+    // Find best photo of this role that's not already selected
+    const bestForRole = photos
+      .filter(photo => 
+        photo.photoType === role && 
+        !usedIndices.has(photo.index)
+      )
+      .sort((a, b) => b.score - a.score)[0];
+    
+    if (bestForRole) {
+      selectedPhotos.push(bestForRole);
+      usedIndices.add(bestForRole.index);
+      
+      // Stop if we've selected MAX_PHOTOS
+      if (selectedPhotos.length >= MAX_PHOTOS) {
+        break;
+      }
+    }
+  }
+  
+  // Step 3: Fill remaining slots with highest scoring photos not yet selected
+  if (selectedPhotos.length < MAX_PHOTOS) {
+    const remainingPhotos = photos
+      .filter(photo => !usedIndices.has(photo.index))
+      .sort((a, b) => b.score - a.score);
+    
+    for (const photo of remainingPhotos) {
+      selectedPhotos.push(photo);
+      usedIndices.add(photo.index);
+      
+      if (selectedPhotos.length >= MAX_PHOTOS) {
+        break;
+      }
+    }
+  }
+  
+  // Step 4: Calculate weighted scores for final ordering
+  const weightedPhotos = selectedPhotos.map(photo => ({
+    ...photo,
+    weightedScore: photo.score * (SLOT_WEIGHTS[selectedPhotos.indexOf(photo)] || 1)
+  }));
+  
+  // Return indices in order of weighted score
+  return weightedPhotos
+    .sort((a, b) => b.weightedScore - a.weightedScore)
+    .map(photo => photo.index);
+}
+
+// Function to generate feedback about the photo selection
+function generateSelectionFeedback(allPhotos, selectedIndices) {
+  // Get the selected photos
+  const selectedPhotos = selectedIndices.map(index => 
+    allPhotos.find(photo => photo.index === index)
+  ).filter(Boolean);
+  
+  // Count the number of each photo type
+  const typeCounts = {};
+  for (const photo of selectedPhotos) {
+    typeCounts[photo.photoType] = (typeCounts[photo.photoType] || 0) + 1;
+  }
+  
+  // Calculate the average score
+  const avgScore = selectedPhotos.reduce((sum, photo) => sum + photo.score, 0) / selectedPhotos.length;
+  
+  // Generate feedback based on the selection
+  let feedback = `Your profile has an average photo score of ${Math.round(avgScore)}/100. `;
+  
+  // Check for role diversity
+  const uniqueRoles = Object.keys(typeCounts).length;
+  if (uniqueRoles >= 4) {
+    feedback += "You have excellent photo diversity showing different aspects of your life. ";
+  } else if (uniqueRoles >= 3) {
+    feedback += "You have good photo diversity, but could benefit from more variety. ";
+  } else {
+    feedback += "Your profile would benefit from more diverse photos showing different aspects of your life. ";
+  }
+  
+  // Add specific role feedback
+  if (typeCounts["primary_headshot"] >= 1) {
+    feedback += "✅ You have a strong headshot which is essential. ";
+  } else {
+    feedback += "💡 Consider adding a clear headshot where your face is visible. ";
+  }
+  
+  if (typeCounts["full_body"] >= 1) {
+    feedback += "✅ Your full body photo helps show your style. ";
+  }
+  
+  if (typeCounts["hobby_activity"] >= 1) {
+    feedback += "✅ Activity photos show your interests and personality. ";
+  }
+  
+  if (typeCounts["pet"] >= 1) {
+    feedback += "✅ Pet photos often increase engagement. ";
+  }
+  
+  if (typeCounts["group_social"] >= 1) {
+    feedback += "✅ Social photos show you're well-connected. ";
+  }
+  
+  // Add ordering advice
+  feedback += "\n\nRecommended photo order: ";
+  feedback += "Start with your strongest headshot, followed by full body and activity photos. ";
+  feedback += "This order has been optimized based on both photo quality and type diversity.";
+  
+  return feedback;
+}
+
 app.listen(PORT, () => {
   console.log(`✅ Dating Photo Coach running on http://localhost:${PORT}`);
 });
