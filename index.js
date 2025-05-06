@@ -396,7 +396,7 @@ RULES:
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }
+  limits: { fileSize: 25 * 1024 * 1024 }
 });
 
 const app = express();
@@ -405,95 +405,107 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-app.post('/analyze', upload.any(), async (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: 'No images uploaded' });
-  }
-
-  try {
-    // Map each file to a promise that resolves with its analysis result or throws an error
-    const analysisPromises = req.files.map(async (file) => {
-      try {
-        const buffer = file.buffer;
-        const featData = await extractFeatures(buffer);
-        const score = Math.round(compositeScore(featData) * 100);
-        const feedbackLines = await generateFeedback(featData, score, buffer);
-
-        // On success, return the data object directly
-        return {
-          score,
-          feedbackLines,
-          features: featData.features,
-          assessment: featData.assessment,
-          photoType: featData.photoType
-        };
-      } catch (imageError) {
-        // Log the error and add filename context
-        console.error(`Error processing image ${file.originalname}: ${imageError.message}`);
-        imageError.filename = file.originalname; // Add filename for context later
-        // Throw the error so Promise.allSettled catches it as 'rejected'
-        throw imageError;
+app.post('/analyze', (req, res) => {
+  upload.any()(req, res, async function(err) {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ 
+          error: 'file-too-large',
+          details: `File size exceeds the ${Math.floor(upload.limits.fileSize / (1024 * 1024))}MB limit.`
+        });
       }
-    });
+      return res.status(500).json({ error: 'upload-failed', details: err.message });
+    }
+    
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No images uploaded' });
+    }
 
-    // Wait for all analysis promises to settle
-    const settledResults = await Promise.allSettled(analysisPromises);
+    try {
+      // Map each file to a promise that resolves with its analysis result or throws an error
+      const analysisPromises = req.files.map(async (file) => {
+        try {
+          const buffer = file.buffer;
+          const featData = await extractFeatures(buffer);
+          const score = Math.round(compositeScore(featData) * 100);
+          const feedbackLines = await generateFeedback(featData, score, buffer);
 
-    // Process the results from Promise.allSettled
-    const results = settledResults.map((result, index) => {
-      if (result.status === 'fulfilled') {
-        // Success: use the resolved value
-        return result.value;
-      } else {
-        // Failure: construct the error object using the reason
-        const reason = result.reason || new Error('Unknown analysis error');
-        // Attempt to get filename from error or fallback to original file array
-        const filename = reason.filename || req.files?.[index]?.originalname || `image ${index + 1}`;
-        // Log the specific failure reason here
-        console.error(`Analysis failed for ${filename}: ${reason.message}`);
-        return {
-          score: null, // Use null for score on error
-          feedbackLines: [`❌ Error processing ${filename}: ${reason.message}`],
-          features: null,
-          assessment: `Could not analyze ${filename}.`,
-          photoType: "generic",
-          error: reason.message // Include error message
-        };
-      }
-    });
+          // On success, return the data object directly
+          return {
+            score,
+            feedbackLines,
+            features: featData.features,
+            assessment: featData.assessment,
+            photoType: featData.photoType
+          };
+        } catch (imageError) {
+          // Log the error and add filename context
+          console.error(`Error processing image ${file.originalname}: ${imageError.message}`);
+          imageError.filename = file.originalname; // Add filename for context later
+          // Throw the error so Promise.allSettled catches it as 'rejected'
+          throw imageError;
+        }
+      });
 
-    // Calculate order based on scores (indices correspond to the original req.files order)
-    // Handle potential null scores during sorting by treating them as lowest score
-    const order = results
-      .map((r, i) => ({ i, score: r.score ?? -1 })) // Use -1 for null scores for sorting
-      .sort((a, b) => b.score - a.score)
-      .map(o => o.i);
+      // Now this await is valid because we're in an async function
+      const settledResults = await Promise.allSettled(analysisPromises);
 
-    // Extract data arrays for the response
-    const scores = results.map(r => r.score);
-    const feedback = results.map(r => r.feedbackLines);
-    const features = results.map(r => r.features);
-    const assessments = results.map(r => r.assessment);
-    const photoTypes = results.map(r => r.photoType);
+      // Process the results from Promise.allSettled
+      const results = settledResults.map((result, index) => {
+        if (result.status === 'fulfilled') {
+          // Success: use the resolved value
+          return result.value;
+        } else {
+          // Failure: construct the error object using the reason
+          const reason = result.reason || new Error('Unknown analysis error');
+          // Attempt to get filename from error or fallback to original file array
+          const filename = reason.filename || req.files?.[index]?.originalname || `image ${index + 1}`;
+          // Log the specific failure reason here
+          console.error(`Analysis failed for ${filename}: ${reason.message}`);
+          return {
+            score: null, // Use null for score on error
+            feedbackLines: [`❌ Error processing ${filename}: ${reason.message}`],
+            features: null,
+            assessment: `Could not analyze ${filename}.`,
+            photoType: "generic",
+            error: reason.message // Include error message
+          };
+        }
+      });
 
-    res.json({
-      version: "v1.1",
-      scores,
-      feedback,
-      order,
-      features,
-      assessments,
-      photoTypes
-    });
+      // Calculate order based on scores (indices correspond to the original req.files order)
+      // Handle potential null scores during sorting by treating them as lowest score
+      const order = results
+        .map((r, i) => ({ i, score: r.score ?? -1 })) // Use -1 for null scores for sorting
+        .sort((a, b) => b.score - a.score)
+        .map(o => o.i);
 
-  } catch (err) {
-    // Catch errors not related to individual image processing (e.g., server setup)
-    console.error("Server error in /analyze:", err);
-    res.status(500).json({
-      error: 'analysis-failed',
-      details: err.message
-    });
-  }
+      // Extract data arrays for the response
+      const scores = results.map(r => r.score);
+      const feedback = results.map(r => r.feedbackLines);
+      const features = results.map(r => r.features);
+      const assessments = results.map(r => r.assessment);
+      const photoTypes = results.map(r => r.photoType);
+
+      res.json({
+        version: "v1.1",
+        scores,
+        feedback,
+        order,
+        features,
+        assessments,
+        photoTypes
+      });
+
+    } catch (err) {
+      // Catch errors not related to individual image processing (e.g., server setup)
+      console.error("Server error in /analyze:", err);
+      res.status(500).json({
+        error: 'analysis-failed',
+        details: err.message
+      });
+    }
+  });
 });
 
 // NEW FUNCTION: Uses AI to select and order photos based on analysis data
@@ -505,21 +517,28 @@ async function getAISelectedOrderAndFeedback(photosForSelection) {
     };
   }
 
-  // --- MODIFIED PROMPT (AI directly analyzes images) ---
-  const systemPrompt = `You are an expert dating profile curator. You will be provided with a series of images, each accompanied by its original index, a pre-calculated score, photo type, and an initial AI assessment.
+  const systemPrompt = `You are an expert dating profile curator. You will be provided with a series of images.
 
 Your task is to:
-1.  **Directly analyze the provided images.**
-2.  **Select the optimal set of up to 6 photos.**
-3.  **Determine the best display order for the selected photos.**
-4.  **Provide actionable improvement tips for the overall profile based on ALL analyzed photos.**
+1. **Directly analyze the provided images.**
+2. **Select the optimal set of 6 photos.**
+3. **Determine the best display order for the selected photos.**
+4. **Provide actionable improvement tips for the overall profile based on ALL analyzed photos.**
 
 Consider these criteria for selection and ordering:
--   **Image Content and Appeal:** Prioritize photos that are clear, well-lit, and engaging. Your direct assessment of the image is key.
--   **Photo Type Diversity:** Aim for a good mix (e.g., headshot, full body, activity, social). Refer to this preferred type order: ${SLOT_ORDER.join(', ')}. Use the 'Type' field provided with each image as a guide, but also use your judgment from the image itself.
--   **Narrative and Authenticity:** Choose photos that collectively paint a well-rounded, authentic picture. Avoid redundancy.
--   **Guidance from Pre-analysis:** The 'Score' and 'AI Assessment' provided with each image are from an initial automated analysis. Use them as supplementary information or a starting point, but your final decision should be based on your comprehensive evaluation of the images themselves.
--   **Optimal Order:** Arrange selected photos logically (e.g., strongest headshot first, then other engaging shots).
+- **Image Content and Appeal:** Prioritize photos that are clear, well-lit, and engaging.
+- **Photo Type Diversity:** Aim for a good mix (e.g., headshot, full body, activity, social). Refer to this preferred type order: ${SLOT_ORDER.join(', ')}.
+- **Narrative and Authenticity:** Choose photos that collectively paint a well-rounded, authentic picture. Avoid redundancy.
+- **Consistency and Recency:** Exclude any photos that look significantly inconsistent with the rest — this includes drastic changes in age appearance, hairstyle, body type, or overall image quality. If a photo makes the subject look much younger, less confident, lower quality, or visually outdated compared to others, **do not select it**, even if it shows a smile or different setting.
+- **Avoid Weak Outliers:** Photos where the subject appears notably less attractive (due to poor lighting, awkward facial expression, unflattering angle, or lesser physique) should be deprioritized unless they offer essential diversity and still align with the current look.
+- **Optimal Order:** Arrange selected photos logically (e.g., strongest headshot first, then other engaging shots).
+
+CRITICAL QUALITY GUIDELINES:
+- REJECT photos that are blurry, poorly lit, or where the subject is too small/distant
+- REJECT photos with poor image quality, excessive filters, or unnatural coloring
+- REJECT photos where the subject has an unflattering expression or awkward pose
+- PRIORITIZE photos with good lighting, clear visibility, and natural expressions
+- AVOID selecting multiple photos with the same outfit, setting, or background
 
 Instructions for Output:
 - Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
@@ -542,11 +561,10 @@ Example JSON Output:
 \`\`\`
 
 Provide only the JSON object in your response.
-You will now receive the images and their associated metadata.`;
-  // --- END OF MODIFIED PROMPT ---
+You will now receive the images.`;
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" }); // Using 1.5 Flash for multimodal
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     const userParts = [];
     userParts.push({ text: systemPrompt });
@@ -564,9 +582,7 @@ You will now receive the images and their associated metadata.`;
           .toBuffer();
         const base64Image = resizedBuffer.toString('base64');
 
-        userParts.push({
-          text: `Photo Original Index: ${photo.index}\nScore: ${photo.score}/100\nType: ${photo.photoType}\nInitial AI Assessment: ${photo.assessment}\n--- End of Metadata for Image ${photo.index} ---`
-        });
+        userParts.push({ text: `Photo Original Index: ${photo.index}\n---` });
         userParts.push({
           inlineData: {
             data: base64Image,
@@ -579,7 +595,7 @@ You will now receive the images and their associated metadata.`;
       }
     }
     
-    userParts.push({ text: "Please provide your selection and improvement tips based on the images and metadata shown above." });
+    userParts.push({ text: "Please provide your selection and improvement tips based on the images shown above." });
 
     const result = await model.generateContent({
       contents: [{
@@ -588,7 +604,7 @@ You will now receive the images and their associated metadata.`;
       }],
       generationConfig: {
         temperature: 0.6,
-        maxOutputTokens: 800, // Increased slightly for potentially more complex reasoning
+        maxOutputTokens: 800,
         responseMimeType: "application/json",
       }
     });
@@ -618,154 +634,59 @@ You will now receive the images and their associated metadata.`;
 
   } catch (error) {
     console.error("Error calling Gemini API for profile curation:", error);
-    // Log the system prompt, but not the userParts as it contains image data
-    console.error("System Prompt sent to AI:", systemPrompt); 
-     return {
-       optimalOrder: photosForSelection.sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).map(p => p.index).slice(0, 6),
-       profileFeedback: `❌ Error: Could not get AI-driven feedback (${error.message}). Showing photos sorted by score.`
-     };
+    console.error("System Prompt sent to AI:", systemPrompt);
+    return {
+      optimalOrder: photosForSelection.map(p => p.index).slice(0, 6),
+      profileFeedback: `❌ Error: Could not get AI-driven feedback (${error.message}). Showing photos in original order.`
+    };
   }
 }
 
-app.post('/optimize-profile', upload.any(), async (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: 'No images uploaded' });
-  }
-
-  try {
-    let cachedDataMap = new Map();
-    if (req.body.cached_results_json) {
-      try {
-        const cachedItems = JSON.parse(req.body.cached_results_json);
-        if (Array.isArray(cachedItems)) {
-          cachedItems.forEach(item => {
-            if (typeof item.originalIndex === 'number' && item.features && typeof item.score === 'number') {
-              cachedDataMap.set(item.originalIndex, item);
-            }
-          });
-        }
-      } catch (e) {
-        console.error("Error parsing cached_results_json:", e.message);
+app.post('/optimize-profile', (req, res) => {
+  upload.any()(req, res, async function(err) {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ 
+          error: 'file-too-large',
+          details: `File size exceeds the ${Math.floor(upload.limits.fileSize / (1024 * 1024))}MB limit.`
+        });
       }
+      return res.status(500).json({ error: 'upload-failed', details: err.message });
+    }
+    
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No images uploaded' });
     }
 
-    const filesWithIndex = req.files.map((file, index) => ({ ...file, originalIndex: index }));
-    const bufferMap = new Map(filesWithIndex.map(f => [f.originalIndex, f.buffer]));
+    try {
+      // Skip detailed analysis and just prepare the images for AI selection
+      const imagesForSelection = req.files.map((file, index) => ({
+        index: index,
+        buffer: file.buffer,
+        filename: file.originalname
+      }));
 
-    const analysisPromises = filesWithIndex.map(async (file) => {
-      try {
-        if (cachedDataMap.has(file.originalIndex)) {
-          const cachedItem = cachedDataMap.get(file.originalIndex);
-          return {
-            index: file.originalIndex,
-            features: cachedItem.features,
-            assessment: cachedItem.assessment,
-            photoType: cachedItem.photoType,
-            score: cachedItem.score, 
-            filename: file.originalname,
-            wasCached: true
-          };
-        } else {
-          const buffer = file.buffer; // Buffer is from req.files
-          const featData = await extractFeatures(buffer); 
-          return {
-            index: file.originalIndex,
-            features: featData.features,
-            assessment: featData.assessment,
-            photoType: featData.photoType,
-            filename: file.originalname,
-            wasCached: false
-          };
-        }
-      } catch (imageError) {
-        const filename = file.originalname || `image ${file.originalIndex + 1}`;
-        console.error(`Error preparing data for ${filename} (index ${file.originalIndex}): ${imageError.message}`);
-        imageError.filename = filename;
-        imageError.index = file.originalIndex;
-        throw imageError;
-      }
-    });
+      const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(imagesForSelection);
 
-    const settledPreparedResults = await Promise.allSettled(analysisPromises);
+      // Return only the selected images' indices and the profile feedback
+      res.json({
+        version: "v2.0-AI-Image-Selection-Only",
+        selectedImages: optimalOrder.map(index => ({
+          originalIndex: index,
+          filename: req.files[index]?.originalname || `image_${index}`
+        })),
+        profileFeedback,
+        totalImagesAnalyzed: req.files.length
+      });
 
-    const analysisResults = settledPreparedResults.map((result, i) => {
-      const originalIndex = filesWithIndex[i]?.originalIndex ?? i;
-      const filename = filesWithIndex[i]?.originalname || `image ${originalIndex + 1}`;
-      const currentBuffer = bufferMap.get(originalIndex);
-
-      if (result.status === 'fulfilled') {
-        const data = result.value;
-        let score;
-
-        if (data.wasCached) {
-          score = data.score;
-        } else {
-          score = Math.round(compositeScore({ features: data.features, photoType: data.photoType }) * 100);
-        }
-        
-        return {
-          index: data.index,
-          score,
-          features: data.features,
-          assessment: data.assessment,
-          photoType: data.photoType,
-          filename: data.filename,
-          buffer: currentBuffer, // Add buffer here
-          error: null
-        };
-      } else {
-        const reason = result.reason || new Error('Unknown data preparation error');
-        console.error(`Data preparation failed for ${filename} (index ${originalIndex}): ${reason.message}`);
-        return {
-          index: originalIndex,
-          score: 0,
-          features: {},
-          assessment: `Could not analyze ${filename}.`,
-          photoType: "generic",
-          filename: filename,
-          buffer: currentBuffer, // Add buffer here too
-          error: reason.message
-        };
-      }
-    });
-
-    const successfulResultsForSelection = analysisResults.filter(r => !r.error && r.buffer); // Ensure buffer exists for selection
-
-    const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(successfulResultsForSelection);
-
-    const resultsMap = new Map(analysisResults.map(r => [r.index, r]));
-    const orderedSelectedImages = optimalOrder
-        .map(index => resultsMap.get(index))
-        .filter(Boolean); 
-
-    res.json({
-      version: "v1.6-AI-Image-Selection", // Update version indicator
-      selectedImages: orderedSelectedImages.map(img => ({
-        filename: img.filename,
-        score: img.score,
-        features: img.features,
-        assessment: img.assessment,
-        photoType: img.photoType,
-        originalIndex: img.index 
-      })),
-      profileFeedback, 
-      totalImagesAnalyzed: analysisResults.length,
-      successfulAnalyses: successfulResultsForSelection.length, // Based on what was sent to selection AI
-      failedAnalyses: analysisResults.filter(r => r.error || !r.buffer).map(r => ({ 
-          filename: r.filename, 
-          error: r.error || (r.buffer ? null : "Missing buffer for AI selection"), 
-          index: r.index 
-      }))
-    });
-
-  } catch (err) {
-    // Catch errors not related to individual image processing or AI selection
-    console.error("Server error in /optimize-profile:", err);
-    res.status(500).json({
-      error: 'profile-optimization-failed',
-      details: err.message
-    });
-  }
+    } catch (err) {
+      console.error("Server error in /optimize-profile:", err);
+      res.status(500).json({
+        error: 'profile-optimization-failed',
+        details: err.message
+      });
+    }
+  });
 });
 
 app.listen(PORT, () => {
