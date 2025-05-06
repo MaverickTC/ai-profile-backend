@@ -191,8 +191,20 @@ Return JSON with 3 top-level keys:
 }
 
 function compositeScore(data) {
-  const f = data.features;
-  const type = data.photoType;
+  const defaultFeatures = {
+    quality: 0,
+    aesthetics: 0,
+    smileProb: 60, // Neutral if not visible/undefined, as per original prompt
+    gazeDeg: 90,   // Max degrees, least favorable for gazeScore if undefined
+    redFlag: false,
+    petFlag: false,
+    filterStrength: 0, // No filter if undefined
+    numFaces: 1,       // Assume 1 face if undefined
+    postureScore: 0    // Neutral posture if undefined
+  };
+  // Merge provided features with defaults. data.features might be undefined or an empty object.
+  const f = { ...defaultFeatures, ...(data.features || {}) };
+  const type = data.photoType || "generic"; // Default to generic if photoType is missing
   
   // Use context-specific weights directly without merging with BASE_WEIGHTS
   const W = CONTEXT_OVERRIDES[type] || CONTEXT_OVERRIDES.generic;
@@ -231,12 +243,12 @@ function compositeScore(data) {
     W.smileProb * normalizedSmileProb +
     W.gazeBonus * gazeScore +
     W.petFlag * (f.petFlag ? 1 : 0) +
-    W.postureBonus * (f.postureScore ?? 0)
+    W.postureBonus * f.postureScore // f.postureScore will use default 0 if not present
   );
 
   const penalties = (
     W.redFlag * (f.redFlag ? 1 : 0) +
-    W.filterPenalty * f.filterStrength +
+    W.filterPenalty * f.filterStrength + // f.filterStrength will use default 0
     // NOTE – group penalty now only if >2 faces *and* context isn't group_social
     W.groupPenalty * ((type !== "group_social" && f.numFaces > 2) ? 1 : 0) +
     smilePenalty +
@@ -603,54 +615,100 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
   }
 
   try {
-    // Map each file to a promise that extracts features or throws an error
+    // Parse cached_results_json if provided
+    let cachedDataMap = new Map();
+    if (req.body.cached_results_json) {
+      try {
+        const cachedItems = JSON.parse(req.body.cached_results_json);
+        if (Array.isArray(cachedItems)) {
+          cachedItems.forEach(item => {
+            if (typeof item.originalIndex === 'number' && item.features && typeof item.score === 'number') {
+              cachedDataMap.set(item.originalIndex, item);
+            }
+          });
+          // console.log(`Loaded ${cachedDataMap.size} items from client cache.`);
+        }
+      } catch (e) {
+        console.error("Error parsing cached_results_json:", e.message);
+      }
+    }
+
     // Add original index to each file object before mapping
     const filesWithIndex = req.files.map((file, index) => ({ ...file, originalIndex: index }));
 
-    const featurePromises = filesWithIndex.map(async (file) => {
+    // This promise will resolve to an object ready for scoring, or already scored if cached.
+    const analysisPromises = filesWithIndex.map(async (file) => {
       try {
-        const buffer = file.buffer;
-        const featData = await extractFeatures(buffer);
-        // On success, return the data object with buffer/filename/index
-        return {
-          index: file.originalIndex, // Keep track of the original index
-          features: featData.features,
-          assessment: featData.assessment,
-          photoType: featData.photoType,
-          filename: file.originalname,
-          buffer: buffer // Keep buffer temporarily if needed, maybe remove later
-        };
+        if (cachedDataMap.has(file.originalIndex)) {
+          const cachedItem = cachedDataMap.get(file.originalIndex);
+          // console.log(`Using cached data for image index ${file.originalIndex}`);
+          return {
+            index: file.originalIndex,
+            features: cachedItem.features,
+            assessment: cachedItem.assessment,
+            photoType: cachedItem.photoType,
+            score: cachedItem.score, // Score is pre-calculated from cache
+            filename: file.originalname,
+            // buffer: file.buffer, // Buffer might not be needed if fully cached, but pass for consistency
+            wasCached: true
+          };
+        } else {
+          // console.log(`Analyzing new image index ${file.originalIndex}`);
+          const buffer = file.buffer;
+          const featData = await extractFeatures(buffer); // Extracts features, assessment, photoType
+          return {
+            index: file.originalIndex,
+            features: featData.features,
+            assessment: featData.assessment,
+            photoType: featData.photoType,
+            filename: file.originalname,
+            // buffer: buffer,
+            wasCached: false
+          };
+        }
       } catch (imageError) {
-        // Log the error and add filename/index context
         const filename = file.originalname || `image ${file.originalIndex + 1}`;
-        console.error(`Error extracting features for ${filename}: ${imageError.message}`);
-        imageError.filename = filename; // Add filename for context later
-        imageError.index = file.originalIndex; // Add index for context
-        // Throw the error so Promise.allSettled catches it as 'rejected'
+        console.error(`Error preparing data for ${filename} (index ${file.originalIndex}): ${imageError.message}`);
+        imageError.filename = filename;
+        imageError.index = file.originalIndex;
         throw imageError;
       }
     });
 
-    // Wait for all feature extraction promises to settle
-    const settledFeatureResults = await Promise.allSettled(featurePromises);
+    // Wait for all analysis data preparation (cached or new) to settle
+    const settledPreparedResults = await Promise.allSettled(analysisPromises);
 
-    // Process results: calculate scores for successful ones, handle failures
-    const analysisResults = settledFeatureResults.map((result, i) => {
-      // Get original index, fallback if needed (shouldn't be necessary with above changes)
+    // Process results: calculate scores for non-cached successful ones, handle failures
+    const analysisResults = settledPreparedResults.map((result, i) => {
       const originalIndex = filesWithIndex[i]?.originalIndex ?? i;
       const filename = filesWithIndex[i]?.originalname || `image ${originalIndex + 1}`;
 
       if (result.status === 'fulfilled') {
-        const data = result.value;
-        // Calculate score synchronously after features are extracted
-        const score = Math.round(compositeScore(data) * 100);
-        // Don't need buffer in the final analysis result unless specifically required later
-        const { buffer, ...restOfData } = data;
-        return { ...restOfData, score, error: null }; // Add score and null error
+        const data = result.value; // This is the object from analysisPromises
+        let score;
+
+        if (data.wasCached) {
+          score = data.score; // Use score from cache
+        } else {
+          // Calculate score for newly analyzed items
+          // compositeScore expects an object like { features: ..., photoType: ... }
+          score = Math.round(compositeScore({ features: data.features, photoType: data.photoType }) * 100);
+        }
+        
+        // Data for getAISelectedOrderAndFeedback
+        return {
+          index: data.index,
+          score,
+          features: data.features,
+          assessment: data.assessment,
+          photoType: data.photoType,
+          filename: data.filename,
+          error: null
+        };
       } else {
-        // Failure: construct the error object using the reason
-        const reason = result.reason || new Error('Unknown feature extraction error');
-        console.error(`Feature extraction failed for ${filename}: ${reason.message}`);
+        // Failure during data preparation (cache lookup or feature extraction)
+        const reason = result.reason || new Error('Unknown data preparation error');
+        console.error(`Data preparation failed for ${filename} (index ${originalIndex}): ${reason.message}`);
         return {
           index: originalIndex,
           score: 0, // Default score for failed analysis
@@ -658,7 +716,7 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
           assessment: `Could not analyze ${filename}.`,
           photoType: "generic",
           filename: filename,
-          error: reason.message // Include error message
+          error: reason.message
         };
       }
     });
@@ -673,17 +731,17 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
     const resultsMap = new Map(analysisResults.map(r => [r.index, r]));
     const orderedSelectedImages = optimalOrder
         .map(index => resultsMap.get(index))
-        .filter(Boolean);
+        .filter(Boolean); // Filter out any undefined if an index was bad
 
     res.json({
-      version: "v1.4-AI-Tips-String", // Update version indicator
+      version: "v1.5-AI-Tips-String-Cached", // Update version indicator
       selectedImages: orderedSelectedImages.map(img => ({
         filename: img.filename,
         score: img.score,
         features: img.features,
         assessment: img.assessment,
         photoType: img.photoType,
-        originalIndex: img.index
+        originalIndex: img.index // This is the originalIndex from the initially uploaded array
       })),
       profileFeedback, // Pass the single string directly
       totalImagesAnalyzed: analysisResults.length,
