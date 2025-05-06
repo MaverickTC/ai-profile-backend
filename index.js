@@ -688,3 +688,10 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
     });
   }
 });
+
+app.listen(PORT, () => {
+  console.log(`AI Profile Backend running on port ${PORT}`);
+  console.log(`API endpoints:`);
+  console.log(`- POST /analyze: Analyze individual photos`);
+  console.log(`- POST /optimize-profile: Get AI-optimized profile`);
+});
