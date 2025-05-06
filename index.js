@@ -140,7 +140,7 @@ Return JSON with 3 top-level keys:
       "generic" (if none of the above clearly apply)`;
 
   // Initialize Gemini model
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" });
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
   // Create parts for the request
   const imagePart = {
@@ -334,7 +334,7 @@ RULES:
 
   try {
     // Initialize Gemini model
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     // Create parts for the request
     const imagePart = {
@@ -503,7 +503,7 @@ async function getAISelectedOrderAndFeedback(analyzedPhotos) {
   }).join('\n\n');
 
   // --- MODIFIED PROMPT (Asking for String) ---
-  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of up to 6 photos from the following list, determine the best display order, and provide actionable improvement tips as a single string.
+  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of up to 6 photos from the following list, determine the best display order, and provide actionable improvement tips.
 
 Consider these criteria for selection and ordering:
 1.  **Overall Quality & Appeal:** Use the provided 'Score' as a primary guide. Higher scores are generally better.
@@ -518,19 +518,20 @@ Instructions:
 - Select a maximum of 6 photos. If fewer are available, select all.
 - Provide your response ONLY as a JSON object containing two keys:
   - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing the chosen photos in the optimal display order.
-  - "improvement_tips": A single string containing 2-4 specific, actionable tips for improving the profile based on ALL analyzed photos (selected and unselected).
+  - "improvement_tips": A single string containing 2-4 paragraphs of specific, actionable tips for improving the profile based on ALL analyzed photos.
       - Identify weaknesses (e.g., missing photo types, low-scoring essential photos).
-      - Suggest concrete actions (e.g., "Consider replacing photo [index] (score: X) with...", "Adding a photo showing [activity/social setting] could...").
-      - Reference specific photo indices when suggesting replacements.
-      - Focus on constructive advice, avoid generic statements.
-      - Start tips with relevant emojis (✅ for strengths, 💡 for suggestions).
-      - Separate each tip with a newline character (\n).
+      - Suggest concrete actions (e.g., "Consider adding a photo showing [activity/social setting]", "A clear headshot would improve your profile").
+      - DO NOT reference specific photo indices or numbers in your feedback.
+      - DO NOT say "photo X" or "replace photo Y" as these numbers are meaningless to the user.
+      - Focus on photo TYPES that are missing or could be improved (e.g., "Consider adding a group photo" rather than "Photo 3 should be replaced").
+      - Format each paragraph with a relevant emoji at the start (✅ for strengths, 💡 for suggestions).
+      - Separate paragraphs with line breaks.
 
 Example JSON Output:
 \`\`\`json
 {
   "selected_order": [1, 4, 0, 5, 2],
-  "improvement_tips": "✅ Great start with the high-scoring headshot (1) and engaging activity shot (4)!\n💡 Consider replacing photo 3 (score: 65, type: generic) with a clearer full-body shot if you have one.\n💡 Adding a group photo showing you with friends could showcase your social side."
+  "improvement_tips": "Consider including a x photo with a clearer full-body shot if you have one, as profile is lacking in this area. Adding a group x type of photo with y could showcase z, as none were provided."
 }
 \`\`\`
 
@@ -538,7 +539,7 @@ Provide only the JSON object in your response.`;
   // --- END OF MODIFIED PROMPT ---
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const result = await model.generateContent({
       contents: [{
@@ -556,12 +557,23 @@ Provide only the JSON object in your response.`;
     const responseText = response.text();
     const parsedResult = JSON.parse(responseText);
 
+    console.log("AI Selected Order (String):", parsedResult.selected_order);
+
     // --- UPDATED VALIDATION (Checking for String) ---
     if (!parsedResult.selected_order || typeof parsedResult.improvement_tips !== 'string') {
         throw new Error("AI response missing required 'selected_order' or 'improvement_tips' (as string) keys.");
     }
-    if (!Array.isArray(parsedResult.selected_order) || !parsedResult.selected_order.every(n => typeof n === 'number')) {
-        throw new Error("AI response 'selected_order' is not an array of numbers.");
+    
+    // Convert string array elements to numbers if needed
+    if (Array.isArray(parsedResult.selected_order)) {
+        parsedResult.selected_order = parsedResult.selected_order.map(item => Number(item));
+    } else {
+        throw new Error("AI response 'selected_order' is not an array.");
+    }
+    
+    // Now verify all elements are numbers
+    if (!parsedResult.selected_order.every(n => !isNaN(n) && typeof n === 'number')) {
+        throw new Error("AI response 'selected_order' contains non-numeric values.");
     }
     // --- END OF UPDATED VALIDATION ---
 
