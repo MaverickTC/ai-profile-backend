@@ -497,45 +497,39 @@ app.post('/analyze', upload.any(), async (req, res) => {
 });
 
 // NEW FUNCTION: Uses AI to select and order photos based on analysis data
-async function getAISelectedOrderAndFeedback(analyzedPhotos) {
-  if (!analyzedPhotos || analyzedPhotos.length === 0) {
+async function getAISelectedOrderAndFeedback(photosForSelection) {
+  if (!photosForSelection || photosForSelection.length === 0) {
     return {
       optimalOrder: [],
       profileFeedback: "No photos available for selection."
     };
   }
 
-  // Prepare the input for the AI prompt
-  const photoDescriptions = analyzedPhotos.map(photo => {
-    // Include original index for identification
-    return `Photo Index ${photo.index}:
-  - Score: ${photo.score}/100
-  - Type: ${photo.photoType}
-  - AI Assessment: ${photo.assessment}`;
-  }).join('\n\n');
+  // --- MODIFIED PROMPT (AI directly analyzes images) ---
+  const systemPrompt = `You are an expert dating profile curator. You will be provided with a series of images, each accompanied by its original index, a pre-calculated score, photo type, and an initial AI assessment.
 
-  // --- MODIFIED PROMPT (Asking for String) ---
-  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of 6 photos from the following list, determine the best display order, and provide actionable improvement tips.
+Your task is to:
+1.  **Directly analyze the provided images.**
+2.  **Select the optimal set of up to 6 photos.**
+3.  **Determine the best display order for the selected photos.**
+4.  **Provide actionable improvement tips for the overall profile based on ALL analyzed photos.**
 
 Consider these criteria for selection and ordering:
-1.  **Overall Quality & Appeal:** Use the provided 'Score' as a primary guide. Higher scores are generally better.
-2.  **Photo Type Diversity:** Aim for a good mix of photo types (e.g., headshot, full body, activity, social). Use the 'Type' field. Prioritize including at least one strong 'primary_headshot' if available. Refer to this preferred type order: ${SLOT_ORDER.join(', ')}.
-3.  **Content & Narrative:** Read the 'AI Assessment' for each photo. Avoid selecting photos that are too visually similar or repetitive. Choose photos that collectively paint a well-rounded picture.
-4.  **Optimal Order:** Arrange the selected photos logically (strongest headshot first, then engaging shots).
+-   **Image Content and Appeal:** Prioritize photos that are clear, well-lit, and engaging. Your direct assessment of the image is key.
+-   **Photo Type Diversity:** Aim for a good mix (e.g., headshot, full body, activity, social). Refer to this preferred type order: ${SLOT_ORDER.join(', ')}. Use the 'Type' field provided with each image as a guide, but also use your judgment from the image itself.
+-   **Narrative and Authenticity:** Choose photos that collectively paint a well-rounded, authentic picture. Avoid redundancy.
+-   **Guidance from Pre-analysis:** The 'Score' and 'AI Assessment' provided with each image are from an initial automated analysis. Use them as supplementary information or a starting point, but your final decision should be based on your comprehensive evaluation of the images themselves.
+-   **Optimal Order:** Arrange selected photos logically (e.g., strongest headshot first, then other engaging shots).
 
-Available Photos:
-${photoDescriptions}
-
-Instructions:
-- Select a maximum of 6 photos. If fewer are available, select all.
-- Provide your response ONLY as a JSON object containing two keys:
-  - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing the chosen photos in the optimal display order.
-  - "improvement_tips": A single string containing 2-4 paragraphs of specific, actionable tips for improving the profile based on ALL analyzed photos.
-      - Identify weaknesses (e.g., missing photo types, low-scoring essential photos).
+Instructions for Output:
+- Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
+- Provide your response ONLY as a JSON object with two keys:
+  - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing your chosen photos in the optimal display order.
+  - "improvement_tips": A single string containing 2-4 paragraphs of specific, actionable tips for improving the profile based on ALL analyzed photos (selected and unselected).
+      - Identify weaknesses (e.g., missing photo types, common issues in the provided set).
       - Suggest concrete actions (e.g., "Consider adding a photo showing [activity/social setting]", "A clear headshot would improve your profile").
       - DO NOT reference specific photo indices or numbers in your feedback.
-      - DO NOT say "photo X" or "replace photo Y" as these numbers are meaningless to the user.
-      - Focus on photo TYPES that are missing or could be improved (e.g., "Consider adding a group photo" rather than "Photo 3 should be replaced").
+      - Focus on photo TYPES that are missing or could be improved.
       - Format each paragraph with a relevant emoji at the start (✅ for strengths, 💡 for suggestions).
       - Separate paragraphs with line breaks.
 
@@ -543,24 +537,58 @@ Example JSON Output:
 \`\`\`json
 {
   "selected_order": [1, 4, 0, 5, 2],
-  "improvement_tips": "Consider including a x photo with a clearer full-body shot if you have one, as profile is lacking in this area. Adding a group x type of photo with y could showcase z, as none were provided."
+  "improvement_tips": "💡 Your photos show a good sense of adventure! To round out your profile, consider adding a clear headshot where you're smiling and looking at the camera. ✅ The variety in activities is great."
 }
 \`\`\`
 
-Provide only the JSON object in your response.`;
+Provide only the JSON object in your response.
+You will now receive the images and their associated metadata.`;
   // --- END OF MODIFIED PROMPT ---
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" }); // Using 1.5 Flash for multimodal
+
+    const userParts = [];
+    userParts.push({ text: systemPrompt });
+
+    for (const photo of photosForSelection) {
+      if (!photo.buffer) {
+        console.warn(`Skipping photo index ${photo.index} for AI selection due to missing buffer.`);
+        userParts.push({ text: `Photo Original Index: ${photo.index} - Image data was not available for review.\n---` });
+        continue;
+      }
+      try {
+        const resizedBuffer = await sharp(photo.buffer)
+          .resize({ width: 512, withoutEnlargement: true })
+          .png({ quality: 80 })
+          .toBuffer();
+        const base64Image = resizedBuffer.toString('base64');
+
+        userParts.push({
+          text: `Photo Original Index: ${photo.index}\nScore: ${photo.score}/100\nType: ${photo.photoType}\nInitial AI Assessment: ${photo.assessment}\n--- End of Metadata for Image ${photo.index} ---`
+        });
+        userParts.push({
+          inlineData: {
+            data: base64Image,
+            mimeType: "image/png"
+          }
+        });
+      } catch (imgError) {
+        console.error(`Error processing image index ${photo.index} for AI selection: ${imgError.message}. Skipping this image for AI review.`);
+        userParts.push({ text: `Photo Original Index: ${photo.index} - Could not be processed for AI review due to an error: ${imgError.message}\n---` });
+      }
+    }
+    
+    userParts.push({ text: "Please provide your selection and improvement tips based on the images and metadata shown above." });
 
     const result = await model.generateContent({
       contents: [{
         role: "user",
-        parts: [{ text: systemPrompt }]
+        parts: userParts
       }],
       generationConfig: {
         temperature: 0.6,
-        maxOutputTokens: 800,
+        maxOutputTokens: 800, // Increased slightly for potentially more complex reasoning
         responseMimeType: "application/json",
       }
     });
@@ -569,42 +597,32 @@ Provide only the JSON object in your response.`;
     const responseText = response.text();
     const parsedResult = JSON.parse(responseText);
 
-    console.log("AI Selected Order (String):", parsedResult.selected_order);
-
-    // --- UPDATED VALIDATION (Checking for String) ---
     if (!parsedResult.selected_order || typeof parsedResult.improvement_tips !== 'string') {
         throw new Error("AI response missing required 'selected_order' or 'improvement_tips' (as string) keys.");
     }
     
-    // Convert string array elements to numbers if needed
     if (Array.isArray(parsedResult.selected_order)) {
         parsedResult.selected_order = parsedResult.selected_order.map(item => Number(item));
     } else {
         throw new Error("AI response 'selected_order' is not an array.");
     }
     
-    // Now verify all elements are numbers
     if (!parsedResult.selected_order.every(n => !isNaN(n) && typeof n === 'number')) {
         throw new Error("AI response 'selected_order' contains non-numeric values.");
     }
-    // --- END OF UPDATED VALIDATION ---
 
-    console.log("AI Improvement Tips (String):", parsedResult.improvement_tips);
-
-    // --- UPDATED RETURN OBJECT (Returning String) ---
     return {
       optimalOrder: parsedResult.selected_order,
-      profileFeedback: parsedResult.improvement_tips // Now returning the single string
+      profileFeedback: parsedResult.improvement_tips
     };
-    // --- END OF UPDATED RETURN OBJECT ---
 
   } catch (error) {
     console.error("Error calling Gemini API for profile curation:", error);
-    console.error("Prompt sent to AI:", systemPrompt);
-     // Fallback needs to return the expected structure (string for feedback)
+    // Log the system prompt, but not the userParts as it contains image data
+    console.error("System Prompt sent to AI:", systemPrompt); 
      return {
-       optimalOrder: analyzedPhotos.sort((a, b) => b.score - a.score).map(p => p.index).slice(0, 6),
-       profileFeedback: `❌ Error: Could not get AI-driven feedback (${error.message}). Showing photos sorted by score.` // Return error as a single string
+       optimalOrder: photosForSelection.sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).map(p => p.index).slice(0, 6),
+       profileFeedback: `❌ Error: Could not get AI-driven feedback (${error.message}). Showing photos sorted by score.`
      };
   }
 }
@@ -615,7 +633,6 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
   }
 
   try {
-    // Parse cached_results_json if provided
     let cachedDataMap = new Map();
     if (req.body.cached_results_json) {
       try {
@@ -626,43 +643,37 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
               cachedDataMap.set(item.originalIndex, item);
             }
           });
-          // console.log(`Loaded ${cachedDataMap.size} items from client cache.`);
         }
       } catch (e) {
         console.error("Error parsing cached_results_json:", e.message);
       }
     }
 
-    // Add original index to each file object before mapping
     const filesWithIndex = req.files.map((file, index) => ({ ...file, originalIndex: index }));
+    const bufferMap = new Map(filesWithIndex.map(f => [f.originalIndex, f.buffer]));
 
-    // This promise will resolve to an object ready for scoring, or already scored if cached.
     const analysisPromises = filesWithIndex.map(async (file) => {
       try {
         if (cachedDataMap.has(file.originalIndex)) {
           const cachedItem = cachedDataMap.get(file.originalIndex);
-          // console.log(`Using cached data for image index ${file.originalIndex}`);
           return {
             index: file.originalIndex,
             features: cachedItem.features,
             assessment: cachedItem.assessment,
             photoType: cachedItem.photoType,
-            score: cachedItem.score, // Score is pre-calculated from cache
+            score: cachedItem.score, 
             filename: file.originalname,
-            // buffer: file.buffer, // Buffer might not be needed if fully cached, but pass for consistency
             wasCached: true
           };
         } else {
-          // console.log(`Analyzing new image index ${file.originalIndex}`);
-          const buffer = file.buffer;
-          const featData = await extractFeatures(buffer); // Extracts features, assessment, photoType
+          const buffer = file.buffer; // Buffer is from req.files
+          const featData = await extractFeatures(buffer); 
           return {
             index: file.originalIndex,
             features: featData.features,
             assessment: featData.assessment,
             photoType: featData.photoType,
             filename: file.originalname,
-            // buffer: buffer,
             wasCached: false
           };
         }
@@ -675,27 +686,23 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
       }
     });
 
-    // Wait for all analysis data preparation (cached or new) to settle
     const settledPreparedResults = await Promise.allSettled(analysisPromises);
 
-    // Process results: calculate scores for non-cached successful ones, handle failures
     const analysisResults = settledPreparedResults.map((result, i) => {
       const originalIndex = filesWithIndex[i]?.originalIndex ?? i;
       const filename = filesWithIndex[i]?.originalname || `image ${originalIndex + 1}`;
+      const currentBuffer = bufferMap.get(originalIndex);
 
       if (result.status === 'fulfilled') {
-        const data = result.value; // This is the object from analysisPromises
+        const data = result.value;
         let score;
 
         if (data.wasCached) {
-          score = data.score; // Use score from cache
+          score = data.score;
         } else {
-          // Calculate score for newly analyzed items
-          // compositeScore expects an object like { features: ..., photoType: ... }
           score = Math.round(compositeScore({ features: data.features, photoType: data.photoType }) * 100);
         }
         
-        // Data for getAISelectedOrderAndFeedback
         return {
           index: data.index,
           score,
@@ -703,50 +710,52 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
           assessment: data.assessment,
           photoType: data.photoType,
           filename: data.filename,
+          buffer: currentBuffer, // Add buffer here
           error: null
         };
       } else {
-        // Failure during data preparation (cache lookup or feature extraction)
         const reason = result.reason || new Error('Unknown data preparation error');
         console.error(`Data preparation failed for ${filename} (index ${originalIndex}): ${reason.message}`);
         return {
           index: originalIndex,
-          score: 0, // Default score for failed analysis
+          score: 0,
           features: {},
           assessment: `Could not analyze ${filename}.`,
           photoType: "generic",
           filename: filename,
+          buffer: currentBuffer, // Add buffer here too
           error: reason.message
         };
       }
     });
 
-    // Filter out images that failed analysis before AI selection
-    const successfulResults = analysisResults.filter(r => !r.error);
+    const successfulResultsForSelection = analysisResults.filter(r => !r.error && r.buffer); // Ensure buffer exists for selection
 
-    // Call the AI curator function - it now returns tips as a single string
-    const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(successfulResults);
+    const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(successfulResultsForSelection);
 
-    // Map the AI's optimalOrder (indices) back to the full analysis results
     const resultsMap = new Map(analysisResults.map(r => [r.index, r]));
     const orderedSelectedImages = optimalOrder
         .map(index => resultsMap.get(index))
-        .filter(Boolean); // Filter out any undefined if an index was bad
+        .filter(Boolean); 
 
     res.json({
-      version: "v1.5-AI-Tips-String-Cached", // Update version indicator
+      version: "v1.6-AI-Image-Selection", // Update version indicator
       selectedImages: orderedSelectedImages.map(img => ({
         filename: img.filename,
         score: img.score,
         features: img.features,
         assessment: img.assessment,
         photoType: img.photoType,
-        originalIndex: img.index // This is the originalIndex from the initially uploaded array
+        originalIndex: img.index 
       })),
-      profileFeedback, // Pass the single string directly
+      profileFeedback, 
       totalImagesAnalyzed: analysisResults.length,
-      successfulAnalyses: successfulResults.length,
-      failedAnalyses: analysisResults.filter(r => r.error).map(r => ({ filename: r.filename, error: r.error, index: r.index }))
+      successfulAnalyses: successfulResultsForSelection.length, // Based on what was sent to selection AI
+      failedAnalyses: analysisResults.filter(r => r.error || !r.buffer).map(r => ({ 
+          filename: r.filename, 
+          error: r.error || (r.buffer ? null : "Missing buffer for AI selection"), 
+          index: r.index 
+      }))
     });
 
   } catch (err) {
