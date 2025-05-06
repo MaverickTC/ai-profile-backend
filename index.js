@@ -140,7 +140,7 @@ Return JSON with 3 top-level keys:
       "generic" (if none of the above clearly apply)`;
 
   // Initialize Gemini model
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
   // Create parts for the request
   const imagePart = {
@@ -346,7 +346,7 @@ RULES:
 
   try {
     // Initialize Gemini model
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     // Create parts for the request
     const imagePart = {
@@ -551,7 +551,7 @@ Provide only the JSON object in your response.`;
   // --- END OF MODIFIED PROMPT ---
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     const result = await model.generateContent({
       contents: [{
