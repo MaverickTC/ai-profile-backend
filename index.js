@@ -502,7 +502,8 @@ async function getAISelectedOrderAndFeedback(analyzedPhotos) {
   - AI Assessment: ${photo.assessment}`;
   }).join('\n\n');
 
-  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of up to 6 photos from the following list, determine the best display order, and provide actionable improvement tips.
+  // --- MODIFIED PROMPT (Asking for String) ---
+  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of up to 6 photos from the following list, determine the best display order, and provide actionable improvement tips as a single string.
 
 Consider these criteria for selection and ordering:
 1.  **Overall Quality & Appeal:** Use the provided 'Score' as a primary guide. Higher scores are generally better.
@@ -517,27 +518,27 @@ Instructions:
 - Select a maximum of 6 photos. If fewer are available, select all.
 - Provide your response ONLY as a JSON object containing two keys:
   - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing the chosen photos in the optimal display order.
-  - "improvement_tips": An array of 2-4 strings. Each string should be a specific, actionable tip for improving the profile based on ALL analyzed photos (selected and unselected).
+  - "improvement_tips": A single string containing 2-4 specific, actionable tips for improving the profile based on ALL analyzed photos (selected and unselected).
       - Identify weaknesses (e.g., missing photo types, low-scoring essential photos).
       - Suggest concrete actions (e.g., "Consider replacing photo [index] (score: X) with...", "Adding a photo showing [activity/social setting] could...").
       - Reference specific photo indices when suggesting replacements.
-      - Focus on constructive advice, avoid generic statements. Start tips with relevant emojis (✅ for strengths, 💡 for suggestions).
+      - Focus on constructive advice, avoid generic statements.
+      - Start tips with relevant emojis (✅ for strengths, 💡 for suggestions).
+      - Separate each tip with a newline character (\n).
 
 Example JSON Output:
 \`\`\`json
 {
   "selected_order": [1, 4, 0, 5, 2],
-  "improvement_tips": [
-    "Consider including a x photo with a clearer full-body shot if you have one, as profile is lacking in this area.",
-    "Adding a group x type of photo with y could showcase z, as none were provided.",
-  ]
+  "improvement_tips": "✅ Great start with the high-scoring headshot (1) and engaging activity shot (4)!\n💡 Consider replacing photo 3 (score: 65, type: generic) with a clearer full-body shot if you have one.\n💡 Adding a group photo showing you with friends could showcase your social side."
 }
 \`\`\`
 
 Provide only the JSON object in your response.`;
+  // --- END OF MODIFIED PROMPT ---
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" }); // Consider gemini-1.5-pro if flash struggles
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" });
 
     const result = await model.generateContent({
       contents: [{
@@ -545,7 +546,7 @@ Provide only the JSON object in your response.`;
         parts: [{ text: systemPrompt }]
       }],
       generationConfig: {
-        temperature: 0.6, // Slightly higher temp might encourage more creative tips
+        temperature: 0.6,
         maxOutputTokens: 800,
         responseMimeType: "application/json",
       }
@@ -555,34 +556,31 @@ Provide only the JSON object in your response.`;
     const responseText = response.text();
     const parsedResult = JSON.parse(responseText);
 
-    // --- UPDATED VALIDATION ---
-    if (!parsedResult.selected_order || !parsedResult.improvement_tips) {
-        throw new Error("AI response missing required 'selected_order' or 'improvement_tips' keys.");
+    // --- UPDATED VALIDATION (Checking for String) ---
+    if (!parsedResult.selected_order || typeof parsedResult.improvement_tips !== 'string') {
+        throw new Error("AI response missing required 'selected_order' or 'improvement_tips' (as string) keys.");
     }
     if (!Array.isArray(parsedResult.selected_order) || !parsedResult.selected_order.every(n => typeof n === 'number')) {
         throw new Error("AI response 'selected_order' is not an array of numbers.");
     }
-    if (!Array.isArray(parsedResult.improvement_tips) || !parsedResult.improvement_tips.every(s => typeof s === 'string')) {
-        throw new Error("AI response 'improvement_tips' is not an array of strings.");
-    }
     // --- END OF UPDATED VALIDATION ---
 
-    //console.log("AI Improvement Tips:", parsedResult.improvement_tips);
+    console.log("AI Improvement Tips (String):", parsedResult.improvement_tips);
 
-    // --- UPDATED RETURN OBJECT ---
+    // --- UPDATED RETURN OBJECT (Returning String) ---
     return {
       optimalOrder: parsedResult.selected_order,
-      profileFeedback: parsedResult.improvement_tips
+      profileFeedback: parsedResult.improvement_tips // Now returning the single string
     };
     // --- END OF UPDATED RETURN OBJECT ---
 
   } catch (error) {
     console.error("Error calling Gemini API for profile curation:", error);
     console.error("Prompt sent to AI:", systemPrompt);
-     // Fallback needs to return the expected structure (array of strings for feedback)
+     // Fallback needs to return the expected structure (string for feedback)
      return {
        optimalOrder: analyzedPhotos.sort((a, b) => b.score - a.score).map(p => p.index).slice(0, 6),
-       profileFeedback: [`❌ Error: Could not get AI-driven feedback (${error.message}). Showing photos sorted by score.`] // Return error in expected array format
+       profileFeedback: `❌ Error: Could not get AI-driven feedback (${error.message}). Showing photos sorted by score.` // Return error as a single string
      };
   }
 }
@@ -656,7 +654,7 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
     // Filter out images that failed analysis before AI selection
     const successfulResults = analysisResults.filter(r => !r.error);
 
-    // Call the AI curator function - it now returns tips[] instead of reasoning string
+    // Call the AI curator function - it now returns tips as a single string
     const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(successfulResults);
 
     // Map the AI's optimalOrder (indices) back to the full analysis results
@@ -666,7 +664,7 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
         .filter(Boolean);
 
     res.json({
-      version: "v1.3-AI-Tips", // Update version indicator
+      version: "v1.4-AI-Tips-String", // Update version indicator
       selectedImages: orderedSelectedImages.map(img => ({
         filename: img.filename,
         score: img.score,
@@ -675,7 +673,7 @@ app.post('/optimize-profile', upload.any(), async (req, res) => {
         photoType: img.photoType,
         originalIndex: img.index
       })),
-      profileFeedback, // Pass the array of tips directly
+      profileFeedback, // Pass the single string directly
       totalImagesAnalyzed: analysisResults.length,
       successfulAnalyses: successfulResults.length,
       failedAnalyses: analysisResults.filter(r => r.error).map(r => ({ filename: r.filename, error: r.error, index: r.index }))
