@@ -515,7 +515,7 @@ async function getAISelectedOrderAndFeedback(analyzedPhotos) {
   }).join('\n\n');
 
   // --- MODIFIED PROMPT (Asking for String) ---
-  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of up to 6 photos from the following list, determine the best display order, and provide actionable improvement tips.
+  const systemPrompt = `You are an expert dating profile curator. Your task is to select the optimal set of 6 photos from the following list, determine the best display order, and provide actionable improvement tips.
 
 Consider these criteria for selection and ordering:
 1.  **Overall Quality & Appeal:** Use the provided 'Score' as a primary guide. Higher scores are generally better.
