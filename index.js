@@ -688,8 +688,10 @@ You will now receive the images.`;
 }
 
 app.post('/optimize-profile', (req, res) => {
+  console.log("Received request to /optimize-profile");
   upload.any()(req, res, async function(err) {
     if (err) {
+      console.error(`Upload error: ${err.message}`);
       if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
         return res.status(413).json({ 
           error: 'file-too-large',
@@ -700,9 +702,12 @@ app.post('/optimize-profile', (req, res) => {
     }
     
     if (!req.files || req.files.length === 0) {
+      console.warn("No images uploaded to /optimize-profile");
       return res.status(400).json({ error: 'No images uploaded' });
     }
 
+    console.log(`Processing ${req.files.length} images for profile optimization`);
+    
     let profileContext = {};
     if (req.body.profile_context_json) {
       try {
@@ -720,8 +725,14 @@ app.post('/optimize-profile', (req, res) => {
         buffer: file.buffer,
         filename: file.originalname
       }));
+      
+      console.log(`Prepared ${imagesForSelection.length} images for AI selection`);
+      console.log(`Image filenames: ${imagesForSelection.map(img => img.filename).join(', ')}`);
 
+      console.log("Calling getAISelectedOrderAndFeedback...");
       const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
+      console.log(`AI returned optimal order: ${JSON.stringify(optimalOrder)}`);
+      console.log(`AI returned feedback length: ${profileFeedback?.length || 0} characters`);
 
       // Ensure we have at least one image in the optimal order
       let finalOrder = optimalOrder;
@@ -730,13 +741,16 @@ app.post('/optimize-profile', (req, res) => {
         // Default to the first image if AI selection is empty
         finalOrder = [0];
       }
+      
+      console.log(`Final order after validation: ${JSON.stringify(finalOrder)}`);
 
       // Calculate a profile score for the optimized selection
       // Since we don't have scores here, we'll use a simpler calculation
       // or you could analyze the selected images first
       const profileScore = Math.min(100, 70 + finalOrder.length * 5); // Simple placeholder calculation
+      console.log(`Calculated profile score: ${profileScore}`);
 
-      res.json({
+      const response = {
         version: "v2.0-AI-Image-Selection-Only",
         selectedImages: finalOrder.map(index => ({
           originalIndex: index,
@@ -745,10 +759,14 @@ app.post('/optimize-profile', (req, res) => {
         profileFeedback,
         totalImagesAnalyzed: req.files.length,
         profileScore
-      });
+      };
+      
+      console.log(`Sending response with ${response.selectedImages.length} selected images`);
+      res.json(response);
 
     } catch (err) {
       console.error("Server error in /optimize-profile:", err);
+      console.error("Error stack:", err.stack);
       
       // Even in case of error, return at least the first image
       const fallbackSelection = [{
@@ -756,6 +774,7 @@ app.post('/optimize-profile', (req, res) => {
         filename: req.files[0]?.originalname || "image_0"
       }];
       
+      console.log("Using fallback selection with first image due to error");
       res.json({
         version: "v2.0-AI-Image-Selection-Only",
         selectedImages: fallbackSelection,
