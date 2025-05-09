@@ -92,14 +92,30 @@ const SLOT_ORDER = [
 
 const norm = (x, min, max) => (x - min) / (max - min);
 
-async function extractFeatures(buffer) {
+async function extractFeatures(buffer, profileContext = {}) {
   const resizedBuffer = await sharp(buffer)
     .resize({ width: 512 })
     .png({ quality: 80 })
     .toBuffer();
 
   const base64Image = resizedBuffer.toString('base64');
-  const systemPrompt = `You are a dating profile photo evaluator with expertise in what makes an ideal dating profile image. Extract the following features from the image:
+
+  let contextText = "";
+  if (Object.keys(profileContext).length > 0) {
+    contextText = "User Profile Context (use this to better understand the user's intent and target audience for this photo):\n";
+    if (profileContext.goal) contextText += `- Goal: ${profileContext.goal}\n`;
+    if (profileContext.gender) contextText += `- Gender: ${profileContext.gender}\n`;
+    if (profileContext.interestedIn) contextText += `- Interested In: ${profileContext.interestedIn}\n`;
+    if (profileContext.appsUsed && profileContext.appsUsed.length > 0) contextText += `- Apps Used: ${profileContext.appsUsed.join(', ')}\n`;
+    if (profileContext.ageRange) contextText += `- Preferred Age Range: ${profileContext.ageRange}\n`;
+    if (profileContext.bio) contextText += `- Bio: "${profileContext.bio}"\n`;
+    if (profileContext.prompts && profileContext.prompts.length > 0) {
+        contextText += `- Prompts:\n${profileContext.prompts.map(p => `  - "${p}"`).join('\n')}\n`;
+    }
+    contextText += "\n";
+  }
+
+  const systemPrompt = `${contextText}You are a dating profile photo evaluator with expertise in what makes an ideal dating profile image. Extract the following features from the image:
 
 1. quality (0 - 100) – visual clarity and resolution
 2. aesthetics (0 - 100) – how attractive and appealing the person looks
@@ -421,12 +437,22 @@ app.post('/analyze', (req, res) => {
       return res.status(400).json({ error: 'No images uploaded' });
     }
 
+    let profileContext = {};
+    if (req.body.profile_context_json) {
+      try {
+        profileContext = JSON.parse(req.body.profile_context_json);
+        console.log("Received profile context for /analyze:", profileContext);
+      } catch (e) {
+        console.warn("Could not parse profile_context_json for /analyze:", e.message);
+      }
+    }
+
     try {
       // Map each file to a promise that resolves with its analysis result or throws an error
       const analysisPromises = req.files.map(async (file) => {
         try {
           const buffer = file.buffer;
-          const featData = await extractFeatures(buffer);
+          const featData = await extractFeatures(buffer, profileContext);
           const score = Math.round(compositeScore(featData) * 100);
           const feedbackLines = await generateFeedback(featData, score, buffer);
 
@@ -487,6 +513,9 @@ app.post('/analyze', (req, res) => {
       const assessments = results.map(r => r.assessment);
       const photoTypes = results.map(r => r.photoType);
 
+      // Calculate overall profile score
+      const profileScore = calculateOverallProfileScore(scores, photoTypes);
+
       res.json({
         version: "v1.1",
         scores,
@@ -494,7 +523,8 @@ app.post('/analyze', (req, res) => {
         order,
         features,
         assessments,
-        photoTypes
+        photoTypes,
+        profileScore
       });
 
     } catch (err) {
@@ -509,7 +539,7 @@ app.post('/analyze', (req, res) => {
 });
 
 // NEW FUNCTION: Uses AI to select and order photos based on analysis data
-async function getAISelectedOrderAndFeedback(photosForSelection) {
+async function getAISelectedOrderAndFeedback(photosForSelection, profileContext = {}) {
   if (!photosForSelection || photosForSelection.length === 0) {
     return {
       optimalOrder: [],
@@ -517,11 +547,26 @@ async function getAISelectedOrderAndFeedback(photosForSelection) {
     };
   }
 
-  const systemPrompt = `You are an expert dating profile curator. You will be provided with a series of images.
+  let contextText = "";
+  if (Object.keys(profileContext).length > 0) {
+    contextText = "The user has provided the following profile information to help you understand their dating goals and preferences. Use this information when selecting photos, determining their order, and crafting your improvement tips:\n";
+    if (profileContext.goal) contextText += `- Goal: ${profileContext.goal}\n`;
+    if (profileContext.gender) contextText += `- Gender: ${profileContext.gender}\n`;
+    if (profileContext.interestedIn) contextText += `- Interested In: ${profileContext.interestedIn}\n`;
+    if (profileContext.appsUsed && profileContext.appsUsed.length > 0) contextText += `- Apps Used: ${profileContext.appsUsed.join(', ')}\n`;
+    if (profileContext.ageRange) contextText += `- Preferred Age Range: ${profileContext.ageRange}\n`;
+    if (profileContext.bio) contextText += `- Bio: "${profileContext.bio}"\n`;
+    if (profileContext.prompts && profileContext.prompts.length > 0) {
+        contextText += `- Prompts:\n${profileContext.prompts.map(p => `  - "${p}"`).join('\n')}\n`;
+    }
+    contextText += "\n";
+  }
+
+  const systemPrompt = `${contextText}You are an expert dating profile curator. You will be provided with a series of images.
 
 Your task is to:
 1. **Directly analyze the provided images.**
-2. **Select the optimal set of 6 photos.**
+2. **Select the optimal set of at least 6 photos**
 3. **Determine the best display order for the selected photos.**
 4. **Provide actionable improvement tips for the overall profile based on ALL analyzed photos.**
 
@@ -658,6 +703,16 @@ app.post('/optimize-profile', (req, res) => {
       return res.status(400).json({ error: 'No images uploaded' });
     }
 
+    let profileContext = {};
+    if (req.body.profile_context_json) {
+      try {
+        profileContext = JSON.parse(req.body.profile_context_json);
+        console.log("Received profile context for /optimize-profile:", profileContext);
+      } catch (e) {
+        console.warn("Could not parse profile_context_json for /optimize-profile:", e.message);
+      }
+    }
+
     try {
       // Skip detailed analysis and just prepare the images for AI selection
       const imagesForSelection = req.files.map((file, index) => ({
@@ -666,9 +721,13 @@ app.post('/optimize-profile', (req, res) => {
         filename: file.originalname
       }));
 
-      const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(imagesForSelection);
+      const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
 
-      // Return only the selected images' indices and the profile feedback
+      // Calculate a profile score for the optimized selection
+      // Since we don't have scores here, we'll use a simpler calculation
+      // or you could analyze the selected images first
+      const profileScore = Math.min(100, 70 + optimalOrder.length * 5); // Simple placeholder calculation
+
       res.json({
         version: "v2.0-AI-Image-Selection-Only",
         selectedImages: optimalOrder.map(index => ({
@@ -676,7 +735,8 @@ app.post('/optimize-profile', (req, res) => {
           filename: req.files[index]?.originalname || `image_${index}`
         })),
         profileFeedback,
-        totalImagesAnalyzed: req.files.length
+        totalImagesAnalyzed: req.files.length,
+        profileScore
       });
 
     } catch (err) {
@@ -688,6 +748,58 @@ app.post('/optimize-profile', (req, res) => {
     }
   });
 });
+
+// Add this function to calculate overall profile score
+function calculateOverallProfileScore(scores, photoTypes) {
+  if (!scores || scores.length === 0) {
+    return 0;
+  }
+
+  // Weight different photo types differently
+  const typeWeights = {
+    "primary_headshot": 1.2,
+    "full_body": 1.1,
+    "hobby_activity": 1.0,
+    "pet": 0.9,
+    "group_social": 0.9,
+    "generic": 0.8
+  };
+
+  // Calculate weighted average
+  let totalWeight = 0;
+  let weightedSum = 0;
+
+  for (let i = 0; i < scores.length; i++) {
+    if (scores[i] === null) continue; // Skip null scores
+    
+    const score = scores[i];
+    const type = photoTypes[i] || "generic";
+    const weight = typeWeights[type] || 0.8;
+    
+    weightedSum += score * weight;
+    totalWeight += weight;
+  }
+
+  // Calculate base score (0-100)
+  const baseScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
+  
+  // Apply bonuses/penalties based on profile completeness
+  let finalScore = baseScore;
+  
+  // Bonus for having at least 4 photos
+  if (scores.filter(s => s !== null).length >= 4) {
+    finalScore += 5;
+  }
+  
+  // Bonus for having diverse photo types
+  const uniqueTypes = new Set(photoTypes.filter(t => t)).size;
+  if (uniqueTypes >= 3) {
+    finalScore += 5;
+  }
+  
+  // Cap at 100
+  return Math.min(100, finalScore);
+}
 
 app.listen(PORT, () => {
   console.log(`AI Profile Backend running on port ${PORT}`);
