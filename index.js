@@ -723,14 +723,22 @@ app.post('/optimize-profile', (req, res) => {
 
       const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
 
+      // Ensure we have at least one image in the optimal order
+      let finalOrder = optimalOrder;
+      if (!finalOrder || finalOrder.length === 0) {
+        console.warn("AI returned empty selection, defaulting to first image");
+        // Default to the first image if AI selection is empty
+        finalOrder = [0];
+      }
+
       // Calculate a profile score for the optimized selection
       // Since we don't have scores here, we'll use a simpler calculation
       // or you could analyze the selected images first
-      const profileScore = Math.min(100, 70 + optimalOrder.length * 5); // Simple placeholder calculation
+      const profileScore = Math.min(100, 70 + finalOrder.length * 5); // Simple placeholder calculation
 
       res.json({
         version: "v2.0-AI-Image-Selection-Only",
-        selectedImages: optimalOrder.map(index => ({
+        selectedImages: finalOrder.map(index => ({
           originalIndex: index,
           filename: req.files[index]?.originalname || `image_${index}`
         })),
@@ -741,9 +749,19 @@ app.post('/optimize-profile', (req, res) => {
 
     } catch (err) {
       console.error("Server error in /optimize-profile:", err);
-      res.status(500).json({
-        error: 'profile-optimization-failed',
-        details: err.message
+      
+      // Even in case of error, return at least the first image
+      const fallbackSelection = [{
+        originalIndex: 0,
+        filename: req.files[0]?.originalname || "image_0"
+      }];
+      
+      res.json({
+        version: "v2.0-AI-Image-Selection-Only",
+        selectedImages: fallbackSelection,
+        profileFeedback: `❌ Error: Could not get AI-driven feedback (${err.message}). Showing first image by default.`,
+        totalImagesAnalyzed: req.files.length,
+        profileScore: 50 // Default score for error case
       });
     }
   });
