@@ -326,39 +326,36 @@ async function generateFeedback(featuresData, score, imageBuffer) {
 
   const assessment = featuresData.assessment;
 
-  const systemPrompt = `You are a concise, kind dating photo coach with expertise in what makes an ideal dating profile image.
+  const systemPrompt = `You are a dating photo coach. Your feedback should be extremely concise and actionable, formatted as JSON.
 The photo has a score of ${score}/100.
-
-AI's assessment:
+AI's assessment of the photo:
 ${assessment}
 
-Evaluation principles:
-- Facial expressions: Genuine smiles with eye contact are effective and trustworthy
-- Body language: Open, expansive postures appear more confident and attractive
-- Clothing/grooming: Well-fitting, clean clothes and good grooming signal self-respect
-- Activities: Photos showing hobbies or interests create conversation starters
-- Pet photos: Including pets (especially dogs) often increases engagement
-- Photo quality: Clear, well-lit photos without heavy filters perform best
-- Cultural context: Consider cultural norms regarding modesty and presentation
-
-IMPORTANT: Evaluate this as just ONE of the photos in a dating profile.
-If this appears to be an activity/hobby photo (sports, racing, etc.), focus on how it shows personality and interests.
-
 CRITICAL RULES:
-- NEVER suggest adding different photos or replacing this photo with another one
-- If face is not visible, DO NOT suggest showing face in another photo
-- DO NOT say things like "consider including a photo where your face is visible" or similar suggestions
-- ONLY comment on the strengths and qualities of THIS SPECIFIC PHOTO
-- If the photo has limitations (like face not visible), but works well for what it is (e.g., showing a hobby), focus on its positive aspects
+- NEVER suggest adding different photos or replacing this photo.
+- If face is not visible, DO NOT suggest showing face in another photo.
+- ONLY comment on THIS SPECIFIC PHOTO.
+- If the photo has limitations (like face not visible) but works well for its type (e.g., showing a hobby), focus on its positive aspects for that type.
 
-RULES:
-- DO NOT include any introductory text, just start with points.
-- NEVER suggest adding/replacing photos
-- If face not visible, DO NOT suggest showing face
-- ONLY comment on THIS SPECIFIC PHOTO
-- For strong photos (score > 75), focus on strengths with 1-2 compliments
-- Start each point with emojis (✅, 💡, ❌)
-- Maximum 3 points, each 1-2 short sentences`;
+RESPONSE FORMAT:
+Return ONLY a valid JSON object with two keys: "good_points" and "improvement_points".
+- "good_points": An array of 3-5 strings. Each string is a strength of the photo, starting with a "👍" emoji.
+- "improvement_points": An array of 2-5 strings. Each string is a specific, actionable improvement, starting with a "👎" emoji.
+- Each point (both good and improvement) MUST be a very short phrase (2-6 words).
+- Examples for points: "👍 Great smile", "👍 Shows personality", "👎 Try different angle", "👎 Too dark", "👎 Blurry background".
+- DO NOT use full sentences. Be direct.
+- If there are no clear improvements, provide at least 1-2 minor suggestions.
+- For strong photos (score > 75), provide at least 3 good points.
+- For weaker photos (score < 50), provide at least 3 improvement points.
+
+Example JSON Output:
+\`\`\`json
+{
+  "good_points": ["👍 Active setting", "👍 Clear action shot", "👍 Sporty vibe", "👍 Good posture"],
+  "improvement_points": ["👎 Enhance brightness", "👎 Center the frame", "👎 Avoid cluttered background", "👎 Use more vibrant colors"]
+}
+\`\`\`
+Ensure your entire response is ONLY the JSON object.`;
 
   try {
     // Initialize Gemini model
@@ -377,35 +374,39 @@ RULES:
         role: "user", 
         parts: [
           { text: systemPrompt },
-          { text: "Give honest feedback for this photo for dating profile." },
           imagePart
         ]
       }],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 250,
+        maxOutputTokens: 400, // Increased for more points
+        responseMimeType: "application/json", // Expect JSON response
       }
     });
 
     const response = result.response;
-    const content = response.text();
-    const tips = content.trim().split(/\n+/);
+    const responseText = response.text();
+    let parsedResult;
+
+    try {
+      parsedResult = JSON.parse(responseText);
+    } catch (e) {
+      console.error("Failed to parse JSON feedback from Gemini:", responseText, e);
+      throw new Error("Invalid JSON feedback from AI.");
+    }
+
+    if (!parsedResult || typeof parsedResult.good_points === 'undefined' || typeof parsedResult.improvement_points === 'undefined') {
+        console.error("AI response missing required keys (good_points, improvement_points):", parsedResult);
+        throw new Error("AI response missing required keys.");
+    }
     
-    // Sort tips by emoji priority: ✅ first, then 💡, then ❌
-    const sortedTips = tips.sort((a, b) => {
-      const getEmojiPriority = (tip) => {
-        if (tip.startsWith('✅')) return 1;
-        if (tip.startsWith('💡')) return 2;
-        if (tip.startsWith('❌')) return 3;
-        return 4; // Any other emoji or no emoji
-      };
-      
-      return getEmojiPriority(a) - getEmojiPriority(b);
-    });
-    
-    return sortedTips.length > 0 ? sortedTips : ["✅ Great photo! No changes needed."];
+    // Instead of combining the arrays, return them separately
+    return {
+      good_points: Array.isArray(parsedResult.good_points) ? parsedResult.good_points : ["👍 Great photo!"],
+      improvement_points: Array.isArray(parsedResult.improvement_points) ? parsedResult.improvement_points : []
+    };
   } catch (error) {
-    console.error("Error calling Gemini API:", error);
+    console.error("Error calling Gemini API for feedback generation:", error);
     throw error;
   }
 }
@@ -454,61 +455,57 @@ app.post('/analyze', (req, res) => {
           const buffer = file.buffer;
           const featData = await extractFeatures(buffer, profileContext);
           const score = Math.round(compositeScore(featData) * 100);
-          const feedbackLines = await generateFeedback(featData, score, buffer);
+          const feedback = await generateFeedback(featData, score, buffer);
 
           // On success, return the data object directly
           return {
             score,
-            feedbackLines,
+            feedback, // This is now an object with good_points and improvement_points
             features: featData.features,
             assessment: featData.assessment,
             photoType: featData.photoType
           };
         } catch (imageError) {
-          // Log the error and add filename context
           console.error(`Error processing image ${file.originalname}: ${imageError.message}`);
-          imageError.filename = file.originalname; // Add filename for context later
-          // Throw the error so Promise.allSettled catches it as 'rejected'
+          imageError.filename = file.originalname;
           throw imageError;
         }
       });
 
-      // Now this await is valid because we're in an async function
       const settledResults = await Promise.allSettled(analysisPromises);
 
       // Process the results from Promise.allSettled
       const results = settledResults.map((result, index) => {
         if (result.status === 'fulfilled') {
-          // Success: use the resolved value
           return result.value;
         } else {
-          // Failure: construct the error object using the reason
           const reason = result.reason || new Error('Unknown analysis error');
-          // Attempt to get filename from error or fallback to original file array
           const filename = reason.filename || req.files?.[index]?.originalname || `image ${index + 1}`;
-          // Log the specific failure reason here
           console.error(`Analysis failed for ${filename}: ${reason.message}`);
           return {
-            score: null, // Use null for score on error
-            feedbackLines: [`❌ Error processing ${filename}: ${reason.message}`],
+            score: null,
+            feedback: {
+              good_points: [],
+              improvement_points: [`👎 Error processing ${filename}: ${reason.message}`]
+            },
             features: null,
             assessment: `Could not analyze ${filename}.`,
             photoType: "generic",
-            error: reason.message // Include error message
+            error: reason.message
           };
         }
       });
 
-      // Calculate order based on scores (indices correspond to the original req.files order)
-      // Handle potential null scores during sorting by treating them as lowest score
+      // Calculate order based on scores
       const order = results
-        .map((r, i) => ({ i, score: r.score ?? -1 })) // Use -1 for null scores for sorting
+        .map((r, i) => ({ i, score: r.score ?? -1 }))
         .sort((a, b) => b.score - a.score)
         .map(o => o.i);
 
       // Extract data arrays for the response
       const scores = results.map(r => r.score);
-      const feedback = results.map(r => r.feedbackLines);
+      const goodFeedback = results.map(r => r.feedback.good_points || []);
+      const improvementFeedback = results.map(r => r.feedback.improvement_points || []);
       const features = results.map(r => r.features);
       const assessments = results.map(r => r.assessment);
       const photoTypes = results.map(r => r.photoType);
@@ -517,9 +514,12 @@ app.post('/analyze', (req, res) => {
       const profileScore = calculateOverallProfileScore(scores, photoTypes);
 
       res.json({
-        version: "v1.1",
+        version: "v1.2",
         scores,
-        feedback,
+        feedback: {
+          good_points: goodFeedback,
+          improvement_points: improvementFeedback
+        },
         order,
         features,
         assessments,
@@ -528,7 +528,6 @@ app.post('/analyze', (req, res) => {
       });
 
     } catch (err) {
-      // Catch errors not related to individual image processing (e.g., server setup)
       console.error("Server error in /analyze:", err);
       res.status(500).json({
         error: 'analysis-failed',
@@ -543,7 +542,7 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
   if (!photosForSelection || photosForSelection.length === 0) {
     return {
       optimalOrder: [],
-      profileFeedback: "No photos available for selection."
+      improvementSteps: []
     };
   }
 
@@ -568,7 +567,7 @@ Your task is to:
 1. **Directly analyze the provided images.**
 2. **Select the optimal set of at least 6 photos**
 3. **Determine the best display order for the selected photos.**
-4. **Provide actionable improvement tips for the overall profile based on ALL analyzed photos.**
+4. **Provide actionable improvement recommendations for the overall profile.**
 
 Consider these criteria for selection and ordering:
 - **Image Content and Appeal:** Prioritize photos that are clear, well-lit, and engaging.
@@ -589,19 +588,28 @@ Instructions for Output:
 - Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
 - Provide your response ONLY as a JSON object with two keys:
   - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing your chosen photos in the optimal display order.
-  - "improvement_tips": A single string containing 2-4 paragraphs of specific, actionable tips for improving the profile based on ALL analyzed photos (selected and unselected).
-      - Identify weaknesses (e.g., missing photo types, common issues in the provided set).
-      - Suggest concrete actions (e.g., "Consider adding a photo showing [activity/social setting]", "A clear headshot would improve your profile").
-      - DO NOT reference specific photo indices or numbers in your feedback.
-      - Focus on photo TYPES that are missing or could be improved.
-      - Format each paragraph with a relevant emoji at the start (✅ for strengths, 💡 for suggestions).
-      - Separate paragraphs with line breaks.
+  - "improvement_steps": An array of 3-5 specific improvement recommendations, each an object with:
+      - "title": A short, clear title (e.g., "Photo with Friends", "Candid Photo")
+      - "description": A brief explanation (e.g., "Add a picture with a friend to your profile.")
 
 Example JSON Output:
 \`\`\`json
 {
   "selected_order": [1, 4, 0, 5, 2],
-  "improvement_tips": "💡 Your photos show a good sense of adventure! To round out your profile, consider adding a clear headshot where you're smiling and looking at the camera. ✅ The variety in activities is great."
+  "improvement_steps": [
+    {
+      "title": "Photo with Friends",
+      "description": "Add a picture with a friend to your profile."
+    },
+    {
+      "title": "Candid Photo",
+      "description": "Use a candid photo of yourself."
+    },
+    {
+      "title": "Show your face clearly",
+      "description": "Make sure your face is clearly visible in at least one photo."
+    }
+  ]
 }
 \`\`\`
 
@@ -658,23 +666,25 @@ You will now receive the images.`;
     const responseText = response.text();
     const parsedResult = JSON.parse(responseText);
 
-    if (!parsedResult.selected_order || typeof parsedResult.improvement_tips !== 'string') {
-        throw new Error("AI response missing required 'selected_order' or 'improvement_tips' (as string) keys.");
-    }
-    
-    if (Array.isArray(parsedResult.selected_order)) {
-        parsedResult.selected_order = parsedResult.selected_order.map(item => Number(item));
-    } else {
-        throw new Error("AI response 'selected_order' is not an array.");
+    if (!parsedResult.selected_order || !Array.isArray(parsedResult.improvement_steps)) {
+        throw new Error("AI response missing required keys or has invalid format.");
     }
     
     if (!parsedResult.selected_order.every(n => !isNaN(n) && typeof n === 'number')) {
         throw new Error("AI response 'selected_order' contains non-numeric values.");
     }
 
+    // Validate improvement_steps structure
+    if (!parsedResult.improvement_steps.every(step => 
+      typeof step === 'object' && 
+      typeof step.title === 'string' && 
+      typeof step.description === 'string')) {
+      throw new Error("AI response 'improvement_steps' has invalid format.");
+    }
+
     return {
       optimalOrder: parsedResult.selected_order,
-      profileFeedback: parsedResult.improvement_tips
+      improvementSteps: parsedResult.improvement_steps
     };
 
   } catch (error) {
@@ -682,7 +692,7 @@ You will now receive the images.`;
     console.error("System Prompt sent to AI:", systemPrompt);
     return {
       optimalOrder: photosForSelection.map(p => p.index).slice(0, 6),
-      profileFeedback: `❌ Error: Could not get AI-driven feedback (${error.message}). Showing photos in original order.`
+      improvementSteps: []
     };
   }
 }
@@ -730,9 +740,9 @@ app.post('/optimize-profile', (req, res) => {
       console.log(`Image filenames: ${imagesForSelection.map(img => img.filename).join(', ')}`);
 
       console.log("Calling getAISelectedOrderAndFeedback...");
-      const { optimalOrder, profileFeedback } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
+      const { optimalOrder, improvementSteps } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
       console.log(`AI returned optimal order: ${JSON.stringify(optimalOrder)}`);
-      console.log(`AI returned feedback length: ${profileFeedback?.length || 0} characters`);
+      console.log(`AI returned ${improvementSteps?.length || 0} improvement steps`);
 
       // Ensure we have at least one image in the optimal order
       let finalOrder = optimalOrder;
@@ -756,12 +766,12 @@ app.post('/optimize-profile', (req, res) => {
           originalIndex: index,
           filename: req.files[index]?.originalname || `image_${index}`
         })),
-        profileFeedback,
+        improvementSteps: improvementSteps || [],
         totalImagesAnalyzed: req.files.length,
         profileScore
       };
       
-      console.log(`Sending response with ${response.selectedImages.length} selected images`);
+      console.log(`Sending response with ${response.selectedImages.length} selected images and ${response.improvementSteps.length} improvement steps`);
       res.json(response);
 
     } catch (err) {
@@ -778,7 +788,16 @@ app.post('/optimize-profile', (req, res) => {
       res.json({
         version: "v2.0-AI-Image-Selection-Only",
         selectedImages: fallbackSelection,
-        profileFeedback: `❌ Error: Could not get AI-driven feedback (${err.message}). Showing first image by default.`,
+        improvementSteps: [
+          {
+            "title": "Add more photos",
+            "description": "Include at least 4-6 photos in your profile."
+          },
+          {
+            "title": "Show your face clearly",
+            "description": "Make sure your face is clearly visible in at least one photo."
+          }
+        ],
         totalImagesAnalyzed: req.files.length,
         profileScore: 50 // Default score for error case
       });
