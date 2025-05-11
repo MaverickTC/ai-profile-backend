@@ -561,6 +561,8 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
     contextText += "\n";
   }
 
+  console.log("contextText",  contextText);
+
   const systemPrompt = `${contextText}You are an expert dating profile curator. You will be provided with a series of images.
 
 Your task is to:
@@ -588,7 +590,7 @@ Instructions for Output:
 - Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
 - Provide your response ONLY as a JSON object with two keys:
   - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing your chosen photos in the optimal display order.
-  - "improvement_steps": An array of 3-5 specific improvement recommendations, each an object with:
+  - "improvement_steps": An array of 3-5 specific improvement recommendations by looking at the selected photos, each an object with:
       - "title": A short, clear title (e.g., "Photo with Friends", "Candid Photo")
       - "description": A brief explanation (e.g., "Add a picture with a friend to your profile.")
 
@@ -600,10 +602,6 @@ Example JSON Output:
     {
       "title": "Photo with Friends",
       "description": "Add a picture with a friend to your profile."
-    },
-    {
-      "title": "Candid Photo",
-      "description": "Use a candid photo of yourself."
     },
     {
       "title": "Show your face clearly",
