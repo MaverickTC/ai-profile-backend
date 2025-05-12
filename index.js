@@ -865,22 +865,36 @@ function calculateOverallProfileScore(scores, photoTypes) {
   // Calculate base score (0-100)
   const baseScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
   
-  // Apply bonuses/penalties based on profile completeness
-  let finalScore = baseScore;
+  // Apply a more critical curve to the base score
+  // This will keep high scores high but make medium and low scores lower
+  let curvedScore = Math.pow(baseScore / 100, 1.5) * 100;
   
-  // Bonus for having at least 4 photos
+  // Apply bonuses/penalties based on profile completeness
+  let finalScore = curvedScore;
+  
+  // Bonus for having at least 4 photos (smaller bonus)
   if (scores.filter(s => s !== null).length >= 4) {
-    finalScore += 5;
+    finalScore += 3;
   }
   
-  // Bonus for having diverse photo types
+  // Bonus for having diverse photo types (smaller bonus)
   const uniqueTypes = new Set(photoTypes.filter(t => t)).size;
   if (uniqueTypes >= 3) {
-    finalScore += 5;
+    finalScore += 3;
   }
   
-  // Cap at 100
-  return Math.min(100, finalScore);
+  // Penalty for having fewer than 3 photos
+  if (scores.filter(s => s !== null).length < 3) {
+    finalScore -= 10;
+  }
+  
+  // Penalty for having only one type of photo
+  if (uniqueTypes <= 1) {
+    finalScore -= 8;
+  }
+  
+  // Cap at 100 and ensure minimum of 10
+  return Math.min(100, Math.max(10, Math.round(finalScore)));
 }
 
 app.listen(PORT, () => {
