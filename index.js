@@ -542,7 +542,8 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
   if (!photosForSelection || photosForSelection.length === 0) {
     return {
       optimalOrder: [],
-      improvementSteps: []
+      improvementSteps: [],
+      suggestedPrompts: []
     };
   }
 
@@ -554,12 +555,12 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
     if (profileContext.interestedIn) contextText += `- Interested In: ${profileContext.interestedIn}\n`;
     if (profileContext.appsUsed && profileContext.appsUsed.length > 0) contextText += `- Apps Used: ${profileContext.appsUsed.join(', ')}\n`;
     if (profileContext.ageRange) contextText += `- Preferred Age Range: ${profileContext.ageRange}\n`;
-    if (profileContext.bio) contextText += `- Bio: "${profileContext.bio}"\n`;
-    if (profileContext.prompts && profileContext.prompts.length > 0) {
-        contextText += `- Prompts:\n${profileContext.prompts.map(p => `  - "${p}"`).join('\n')}\n`;
+    //if (profileContext.bio) contextText += `- Bio: "${profileContext.bio}"\n`;
+    //if (profileContext.prompts && profileContext.prompts.length > 0) {
+        //contextText += `- Prompts:\n${profileContext.prompts.map(p => `  - "${p}"`).join('\n')}\n`;
     }
     contextText += "\n";
-  }
+  
 
   console.log("contextText",  contextText);
 
@@ -570,6 +571,7 @@ Your task is to:
 2. **Select the optimal set of at least 6 photos**
 3. **Determine the best display order for the selected photos.**
 4. **Provide actionable improvement recommendations for the overall profile.**
+5. **Suggest 3 dating app prompts with answers based on what you can infer about the person from their photos.**
 
 Consider these criteria for selection and ordering:
 - **Image Content and Appeal:** Prioritize photos that are clear, well-lit, and engaging.
@@ -586,13 +588,28 @@ CRITICAL QUALITY GUIDELINES:
 - PRIORITIZE photos with good lighting, clear visibility, and natural expressions
 - AVOID selecting multiple photos with the same outfit, setting, or background
 
+For prompt suggestions, choose from these options and create personalized answers:
+- "I go crazy for …"
+- "A life goal of mine"
+- "My simple pleasures"
+- "Green flags I look for"
+- "Try to guess this about me"
+- "I wind down by …"
+- "Together, we could …"
+- "Most spontaneous thing I've done"
+- "I geek out on …"
+- "I'll brag about you to my friends if …"
+
 Instructions for Output:
 - Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
-- Provide your response ONLY as a JSON object with two keys:
+- Provide your response ONLY as a JSON object with three keys:
   - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing your chosen photos in the optimal display order.
   - "improvement_steps": An array of 3-5 specific improvement recommendations by looking at the selected photos, each an object with:
       - "title": A short, clear title (e.g., "Photo with Friends", "Candid Photo")
       - "description": A brief explanation (e.g., "Add a picture with a friend to your profile.")
+  - "suggested_prompts": An array of 3 objects, each with:
+      - "prompt": One of the prompt options listed above
+      - "answer": A personalized, authentic-sounding answer (1-3 sentences) based on what you can infer about the person from their photos
 
 Example JSON Output:
 \`\`\`json
@@ -606,6 +623,20 @@ Example JSON Output:
     {
       "title": "Show your face clearly",
       "description": "Make sure your face is clearly visible in at least one photo."
+    }
+  ],
+  "suggested_prompts": [
+    {
+      "prompt": "I geek out on …",
+      "answer": "Photography and finding the perfect lighting for a sunset shot. Nothing beats the feeling of capturing that golden hour glow just right."
+    },
+    {
+      "prompt": "Together, we could …",
+      "answer": "Explore hidden hiking trails, find the best coffee shops in town, and debate whether pineapple belongs on pizza (it does)."
+    },
+    {
+      "prompt": "My simple pleasures",
+      "answer": "A good book on a rainy day, spontaneous road trips, and finding restaurants with outdoor patios that allow dogs."
     }
   ]
 }
@@ -646,7 +677,7 @@ You will now receive the images.`;
       }
     }
     
-    userParts.push({ text: "Please provide your selection and improvement tips based on the images shown above." });
+    userParts.push({ text: "Please provide your selection, improvement tips, and suggested prompts based on the images shown above." });
 
     const result = await model.generateContent({
       contents: [{
@@ -655,7 +686,7 @@ You will now receive the images.`;
       }],
       generationConfig: {
         temperature: 0.6,
-        maxOutputTokens: 800,
+        maxOutputTokens: 1000,
         responseMimeType: "application/json",
       }
     });
@@ -680,9 +711,20 @@ You will now receive the images.`;
       throw new Error("AI response 'improvement_steps' has invalid format.");
     }
 
+    // Validate suggested_prompts structure if present
+    const suggestedPrompts = parsedResult.suggested_prompts || [];
+    if (suggestedPrompts.length > 0 && !suggestedPrompts.every(prompt => 
+      typeof prompt === 'object' && 
+      typeof prompt.prompt === 'string' && 
+      typeof prompt.answer === 'string')) {
+      console.warn("AI response 'suggested_prompts' has invalid format, using empty array instead.");
+      parsedResult.suggested_prompts = [];
+    }
+
     return {
       optimalOrder: parsedResult.selected_order,
-      improvementSteps: parsedResult.improvement_steps
+      improvementSteps: parsedResult.improvement_steps,
+      suggestedPrompts: parsedResult.suggested_prompts || []
     };
 
   } catch (error) {
@@ -690,7 +732,8 @@ You will now receive the images.`;
     console.error("System Prompt sent to AI:", systemPrompt);
     return {
       optimalOrder: photosForSelection.map(p => p.index).slice(0, 6),
-      improvementSteps: []
+      improvementSteps: [],
+      suggestedPrompts: []
     };
   }
 }
@@ -734,13 +777,7 @@ app.post('/optimize-profile', (req, res) => {
         filename: file.originalname
       }));
       
-      console.log(`Prepared ${imagesForSelection.length} images for AI selection`);
-      console.log(`Image filenames: ${imagesForSelection.map(img => img.filename).join(', ')}`);
-
-      console.log("Calling getAISelectedOrderAndFeedback...");
-      const { optimalOrder, improvementSteps } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
-      console.log(`AI returned optimal order: ${JSON.stringify(optimalOrder)}`);
-      console.log(`AI returned ${improvementSteps?.length || 0} improvement steps`);
+      const { optimalOrder, improvementSteps, suggestedPrompts } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
 
       // Ensure we have at least one image in the optimal order
       let finalOrder = optimalOrder;
@@ -759,17 +796,18 @@ app.post('/optimize-profile', (req, res) => {
       console.log(`Calculated profile score: ${profileScore}`);
 
       const response = {
-        version: "v2.0-AI-Image-Selection-Only",
+        version: "v2.0-AI-Image-Selection-With-Prompts",
         selectedImages: finalOrder.map(index => ({
           originalIndex: index,
           filename: req.files[index]?.originalname || `image_${index}`
         })),
         improvementSteps: improvementSteps || [],
+        suggestedPrompts: suggestedPrompts,
         totalImagesAnalyzed: req.files.length,
         profileScore
       };
       
-      console.log(`Sending response with ${response.selectedImages.length} selected images and ${response.improvementSteps.length} improvement steps`);
+      console.log(`Sending response with ${response.selectedImages.length} selected images, ${response.improvementSteps.length} improvement steps, and ${response.suggestedPrompts.length} suggested prompts`);
       res.json(response);
 
     } catch (err) {
@@ -782,9 +820,25 @@ app.post('/optimize-profile', (req, res) => {
         filename: req.files[0]?.originalname || "image_0"
       }];
       
+      // Default prompts for error case
+      const fallbackPrompts = [
+        {
+          "prompt": "I geek out on …",
+          "answer": "Finding hidden gems in my city - whether it's a cozy bookstore, a scenic hiking trail, or a café with the perfect atmosphere."
+        },
+        {
+          "prompt": "Together, we could …",
+          "answer": "Explore new restaurants, debate the best movies of all time, and create memories worth sharing."
+        },
+        {
+          "prompt": "My simple pleasures",
+          "answer": "A good book, sunset walks, and conversations that last longer than planned."
+        }
+      ];
+      
       console.log("Using fallback selection with first image due to error");
       res.json({
-        version: "v2.0-AI-Image-Selection-Only",
+        version: "v2.0-AI-Image-Selection-With-Prompts",
         selectedImages: fallbackSelection,
         improvementSteps: [
           {
@@ -796,6 +850,7 @@ app.post('/optimize-profile', (req, res) => {
             "description": "Make sure your face is clearly visible in at least one photo."
           }
         ],
+        suggestedPrompts: fallbackPrompts,
         totalImagesAnalyzed: req.files.length,
         profileScore: 50 // Default score for error case
       });
