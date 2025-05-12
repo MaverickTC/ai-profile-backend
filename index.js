@@ -585,14 +585,36 @@ ORDERING GUIDELINES:
 5. Fifth photo: Another high-quality photo showing a different aspect
 6. Sixth photo: Any remaining strong photo that adds variety
 
+Note: If any specific photo type is missing, substitute with the next best available photo that shows a different aspect of the person.
+
 IMPROVEMENT RECOMMENDATIONS:
 Based on the selected photos, identify 3-5 specific ways the profile could be improved.
+- Be specific and actionable
+- Check carefully what's already in the photos before making recommendations
+- Focus on quality improvements or diversity rather than suggesting duplicates
+
+PROMPT SUGGESTIONS, choose from these options and create personalized answers:
+- "I go crazy for"
+- "A life goal of mine"
+- "My simple pleasures"
+- "Green flags I look for"
+- "Try to guess this about me"
+- "I wind down by"
+- "Together, we could"
+- "Most spontaneous thing I've done"
+- "I geek out on"
+- "I'll brag about you to my friends if"
 
 RESPONSE FORMAT:
-Return a JSON object with these keys:
-- "selected_order": Array of original photo indices in optimal display order (max 6 photos)
-- "improvement_steps": Array of objects with "title" and "description" for each improvement
-- "suggestedPrompts": Array of objects with "prompt" and "answer" for 3 dating app prompts
+- Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
+- Provide your response ONLY as a JSON object with three keys:
+  - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing your chosen photos in the optimal display order.
+  - "improvement_steps": An array of 3-5 specific improvement recommendations by looking at the selected photos, each an object with:
+      - "title": A short, clear title (e.g., "Photo with Friends", "Candid Photo")
+      - "description": A brief explanation (e.g., "Add a picture with a friend to your profile.")
+  - "suggested_prompts": An array of 3 objects, each with:
+      - "prompt": One of the prompt options listed above
+      - "answer": A personalized, authentic-sounding answer (1-3 sentences) based on what you can infer about the person from their photos
 
 Focus on making objective selections based on technical quality and dating profile best practices.`;
 
