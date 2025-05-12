@@ -549,7 +549,7 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
 
   let contextText = "";
   if (Object.keys(profileContext).length > 0) {
-    contextText = "The user has provided the following profile information to help you understand their dating goals and preferences. Use this information when selecting photos, determining their order, and crafting your improvement tips:\n";
+    contextText = "User Profile Context:\n";
     if (profileContext.goal) contextText += `- Goal: ${profileContext.goal}\n`;
     if (profileContext.gender) contextText += `- Gender: ${profileContext.gender}\n`;
     if (profileContext.interestedIn) contextText += `- Interested In: ${profileContext.interestedIn}\n`;
@@ -560,90 +560,42 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
         //contextText += `- Prompts:\n${profileContext.prompts.map(p => `  - "${p}"`).join('\n')}\n`;
     }
     contextText += "\n";
-  
+  }
 
-  console.log("contextText",  contextText);
+  const systemPrompt = `${contextText}You are an expert dating profile photo curator. Your task is to select and order the optimal set of photos for a dating profile.
 
-  const systemPrompt = `${contextText}You are an expert dating profile curator. You will be provided with a series of images.
+SELECTION CRITERIA (in order of importance):
+1. QUALITY: Select photos that are clear, well-lit, and high resolution, and show the person's face in a good handsome/beatiful way
+2. FACE VISIBILITY: At least one photo should clearly show the person's face
+3. DIVERSITY: Include a mix of photo types following this priority order: ${SLOT_ORDER.join(' > ')}
+4. CONSISTENCY: All photos should appear to be of the same person and from a similar time period
+5. AUTHENTICITY: Photos should look natural and represent the person accurately
 
-Your task is to:
-1. **Directly analyze the provided images.**
-2. **Select the optimal set of at least 6 photos**
-3. **Determine the best display order for the selected photos.**
-4. **Provide actionable improvement recommendations for the overall profile.**
-5. **Suggest 3 dating app prompts with answers based on what you can infer about the person from their photos.**
+REJECTION CRITERIA:
+- Blurry or poorly lit images
+- Photos where the subject is too small or distant
+- Heavily filtered or edited photos
+- Multiple similar photos (select the best one)
+- Photos with unflattering expressions or awkward poses
 
-Consider these criteria for selection and ordering:
-- **Image Content and Appeal:** Prioritize photos that are clear, well-lit, and engaging.
-- **Photo Type Diversity:** Aim for a good mix (e.g., headshot, full body, activity, social). Refer to this preferred type order: ${SLOT_ORDER.join(', ')}.
-- **Narrative and Authenticity:** Choose photos that collectively paint a well-rounded, authentic picture. Avoid redundancy.
-- **Consistency and Recency:** Exclude any photos that look significantly inconsistent with the rest — this includes drastic changes in age appearance, hairstyle, body type, or overall image quality. If a photo makes the subject look much younger, less confident, lower quality, or visually outdated compared to others, **do not select it**, even if it shows a smile or different setting.
-- **Avoid Weak Outliers:** Photos where the subject appears notably less attractive (due to poor lighting, awkward facial expression, unflattering angle, or lesser physique) should be deprioritized unless they offer essential diversity and still align with the current look.
-- **Optimal Order:** Arrange selected photos logically (e.g., strongest headshot first, then other engaging shots).
+ORDERING GUIDELINES:
+1. First photo: Clear headshot with good lighting and friendly expression
+2. Second photo: Full body shot showing physique and style
+3. Third photo: Activity/hobby photo showing interests
+4. Fourth photo: Social photo showing friendliness
+5. Fifth photo: Another high-quality photo showing a different aspect
+6. Sixth photo: Any remaining strong photo that adds variety
 
-CRITICAL QUALITY GUIDELINES:
-- REJECT photos that are blurry, poorly lit, or where the subject is too small/distant
-- REJECT photos with poor image quality, excessive filters, or unnatural coloring
-- REJECT photos where the subject has an unflattering expression or awkward pose
-- PRIORITIZE photos with good lighting, clear visibility, and natural expressions
-- AVOID selecting multiple photos with the same outfit, setting, or background
+IMPROVEMENT RECOMMENDATIONS:
+Based on the selected photos, identify 3-5 specific ways the profile could be improved.
 
-For prompt suggestions, choose from these options and create personalized answers:
-- "I go crazy for …"
-- "A life goal of mine"
-- "My simple pleasures"
-- "Green flags I look for"
-- "Try to guess this about me"
-- "I wind down by …"
-- "Together, we could …"
-- "Most spontaneous thing I've done"
-- "I geek out on …"
-- "I'll brag about you to my friends if …"
+RESPONSE FORMAT:
+Return a JSON object with these keys:
+- "selected_order": Array of original photo indices in optimal display order (max 6 photos)
+- "improvement_steps": Array of objects with "title" and "description" for each improvement
+- "suggestedPrompts": Array of objects with "prompt" and "answer" for 3 dating app prompts
 
-Instructions for Output:
-- Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
-- Provide your response ONLY as a JSON object with three keys:
-  - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing your chosen photos in the optimal display order.
-  - "improvement_steps": An array of 3-5 specific improvement recommendations by looking at the selected photos, each an object with:
-      - "title": A short, clear title (e.g., "Photo with Friends", "Candid Photo")
-      - "description": A brief explanation (e.g., "Add a picture with a friend to your profile.")
-  - "suggested_prompts": An array of 3 objects, each with:
-      - "prompt": One of the prompt options listed above
-      - "answer": A personalized, authentic-sounding answer (1-3 sentences) based on what you can infer about the person from their photos
-
-Example JSON Output:
-\`\`\`json
-{
-  "selected_order": [1, 4, 0, 5, 2],
-  "improvement_steps": [
-    {
-      "title": "Photo with Friends",
-      "description": "Add a picture with a friend to your profile."
-    },
-    {
-      "title": "Show your face clearly",
-      "description": "Make sure your face is clearly visible in at least one photo."
-    }
-  ],
-  "suggested_prompts": [
-    {
-      "prompt": "I geek out on …",
-      "answer": "Photography and finding the perfect lighting for a sunset shot. Nothing beats the feeling of capturing that golden hour glow just right."
-    },
-    {
-      "prompt": "Together, we could …",
-      "answer": "Explore hidden hiking trails, find the best coffee shops in town, and debate whether pineapple belongs on pizza (it does)."
-    },
-    {
-      "prompt": "My simple pleasures",
-      "answer": "A good book on a rainy day, spontaneous road trips, and finding restaurants with outdoor patios that allow dogs."
-    }
-  ]
-}
-\`\`\`
-
-Provide only the JSON object in your response.
-You will now receive the images.`;
+Focus on making objective selections based on technical quality and dating profile best practices.`;
 
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
