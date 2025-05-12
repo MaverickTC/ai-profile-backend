@@ -560,7 +560,6 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
         //contextText += `- Prompts:\n${profileContext.prompts.map(p => `  - "${p}"`).join('\n')}\n`;
     }
     contextText += "\n";
-  }
 
   const systemPrompt = `${contextText}You are an expert dating profile photo curator. Your task is to select and order the optimal set of photos for a dating profile.
 
