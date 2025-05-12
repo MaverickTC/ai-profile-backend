@@ -543,7 +543,8 @@ async function getAISelectedOrderAndFeedback(photosForSelection, profileContext 
     return {
       optimalOrder: [],
       improvementSteps: [],
-      suggestedPrompts: []
+      suggestedPrompts: [],
+      suggestedBio: ""
     };
   }
 
@@ -605,9 +606,17 @@ PROMPT SUGGESTIONS, choose from these options and create personalized answers:
 - "I geek out on"
 - "I'll brag about you to my friends if"
 
+BIO SUGGESTION:
+Create a compelling, authentic-sounding bio (2-4 sentences) based on what you can infer about the person from their photos. The bio should:
+- Be conversational and friendly
+- Highlight personality traits visible in the photos
+- Mention interests or activities shown in the photos
+- Include a subtle call to action or conversation starter
+- Be 150-200 characters in length
+
 RESPONSE FORMAT:
 - Select a maximum of 6 photos. If fewer than 6 are suitable or available, select those.
-- Provide your response ONLY as a JSON object with three keys:
+- Provide your response ONLY as a JSON object with four keys:
   - "selected_order": An array of the original photo indices (e.g., [3, 0, 5, 1, 4, 2]) representing your chosen photos in the optimal display order.
   - "improvement_steps": An array of 3-5 specific improvement recommendations by looking at the selected photos, each an object with:
       - "title": A short, clear title (e.g., "Photo with Friends", "Candid Photo")
@@ -615,6 +624,7 @@ RESPONSE FORMAT:
   - "suggested_prompts": An array of 3 objects, each with:
       - "prompt": One of the prompt options listed above
       - "answer": A personalized, authentic-sounding answer (1-3 sentences) based on what you can infer about the person from their photos
+  - "suggested_bio": A string containing the suggested bio
 
 Focus on making objective selections based on technical quality and dating profile best practices.`;
 
@@ -650,7 +660,7 @@ Focus on making objective selections based on technical quality and dating profi
       }
     }
     
-    userParts.push({ text: "Please provide your selection, improvement tips, and suggested prompts based on the images shown above." });
+    userParts.push({ text: "Please provide your selection, improvement tips, suggested prompts, and suggested bio based on the images shown above." });
 
     const result = await model.generateContent({
       contents: [{
@@ -694,10 +704,17 @@ Focus on making objective selections based on technical quality and dating profi
       parsedResult.suggested_prompts = [];
     }
 
+    // Validate suggested_bio if present
+    const suggestedBio = typeof parsedResult.suggested_bio === 'string' ? parsedResult.suggested_bio : "";
+    if (!parsedResult.suggested_bio) {
+      console.warn("AI response 'suggested_bio' is missing or not a string, using empty string instead.");
+    }
+
     return {
       optimalOrder: parsedResult.selected_order,
       improvementSteps: parsedResult.improvement_steps,
-      suggestedPrompts: parsedResult.suggested_prompts || []
+      suggestedPrompts: parsedResult.suggested_prompts || [],
+      suggestedBio: suggestedBio
     };
 
   } catch (error) {
@@ -706,7 +723,8 @@ Focus on making objective selections based on technical quality and dating profi
     return {
       optimalOrder: photosForSelection.map(p => p.index).slice(0, 6),
       improvementSteps: [],
-      suggestedPrompts: []
+      suggestedPrompts: [],
+      suggestedBio: ""
     };
   }
 }
@@ -750,7 +768,7 @@ app.post('/optimize-profile', (req, res) => {
         filename: file.originalname
       }));
       
-      const { optimalOrder, improvementSteps, suggestedPrompts } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
+      const { optimalOrder, improvementSteps, suggestedPrompts, suggestedBio } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
 
       // Ensure we have at least one image in the optimal order
       let finalOrder = optimalOrder;
@@ -769,18 +787,19 @@ app.post('/optimize-profile', (req, res) => {
       console.log(`Calculated profile score: ${profileScore}`);
 
       const response = {
-        version: "v2.0-AI-Image-Selection-With-Prompts",
+        version: "v2.0-AI-Image-Selection-With-Prompts-And-Bio",
         selectedImages: finalOrder.map(index => ({
           originalIndex: index,
           filename: req.files[index]?.originalname || `image_${index}`
         })),
         improvementSteps: improvementSteps || [],
         suggestedPrompts: suggestedPrompts,
+        suggestedBio: suggestedBio || "",
         totalImagesAnalyzed: req.files.length,
         profileScore
       };
       
-      console.log(`Sending response with ${response.selectedImages.length} selected images, ${response.improvementSteps.length} improvement steps, and ${response.suggestedPrompts.length} suggested prompts`);
+      console.log(`Sending response with ${response.selectedImages.length} selected images, ${response.improvementSteps.length} improvement steps, ${response.suggestedPrompts.length} suggested prompts, and a bio of ${response.suggestedBio.length} characters`);
       res.json(response);
 
     } catch (err) {
@@ -809,9 +828,12 @@ app.post('/optimize-profile', (req, res) => {
         }
       ];
       
+      // Default bio for error case
+      const fallbackBio = "Adventure seeker with a passion for good food and better conversations. Looking for someone to share new experiences with. Coffee enthusiast by day, stargazer by night.";
+      
       console.log("Using fallback selection with first image due to error");
       res.json({
-        version: "v2.0-AI-Image-Selection-With-Prompts",
+        version: "v2.0-AI-Image-Selection-With-Prompts-And-Bio",
         selectedImages: fallbackSelection,
         improvementSteps: [
           {
@@ -824,6 +846,7 @@ app.post('/optimize-profile', (req, res) => {
           }
         ],
         suggestedPrompts: fallbackPrompts,
+        suggestedBio: fallbackBio,
         totalImagesAnalyzed: req.files.length,
         profileScore: 50 // Default score for error case
       });
