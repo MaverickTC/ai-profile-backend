@@ -585,7 +585,7 @@ ORDERING GUIDELINES:
 5. Fifth photo: Another high-quality photo showing a different aspect
 6. Sixth photo: Any remaining strong photo that adds variety
 
-Note: If any specific photo type is missing, substitute with the next best available photo that shows a different aspect of the person.
+Note: If any specific photo type is missing, substitute with the next best available photo that shows a different aspect of the person. (It is mostly better to have more photos unless they are really bad)
 
 IMPROVEMENT RECOMMENDATIONS:
 Based on the selected photos, identify 3-5 specific ways the profile could be improved.
