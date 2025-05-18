@@ -326,12 +326,13 @@ async function generateFeedback(featuresData, score, imageBuffer) {
 
   const assessment = featuresData.assessment;
 
-  const systemPrompt = `You are a dating photo coach. Your feedback should be extremely concise and actionable, formatted as JSON.
+  const systemPrompt = `You are a brutally dating photo coach. Your feedback should be extremely concise and actionable, formatted as JSON.
 The photo has a score of ${score}/100.
 AI's assessment of the photo:
 ${assessment}
 
 CRITICAL RULES:
+- Be DIRECT and HONEST - if a photo is bad for dating, say so clearly
 - NEVER suggest adding different photos or replacing this photo.
 - If face is not visible, DO NOT suggest showing face in another photo.
 - ONLY comment on THIS SPECIFIC PHOTO.
@@ -344,9 +345,9 @@ Return ONLY a valid JSON object with two keys: "good_points" and "improvement_po
 - Each point (both good and improvement) MUST be a very short phrase (2-6 words).
 - Examples for points: "👍 Great smile", "👍 Shows personality", "👎 Try different angle", "👎 Too dark", "👎 Blurry background".
 - DO NOT use full sentences. Be direct.
-- If there are no clear improvements, provide at least 1-2 minor suggestions.
-- For strong photos (score > 75), provide at least 3 good points.
-- For weaker photos (score < 50), provide at least 3 improvement points.
+- For poor photos (score < 50), limit good_points to a MAXIMUM of 2 items, even if technically good
+- For poor photos, focus on the DEAL-BREAKER issues first (expression, approachability, etc.)
+- If the photo gives a negative impression, say so directly with phrases like "Too intimidating" or "Appears unfriendly"
 
 Example JSON Output:
 \`\`\`json
@@ -422,7 +423,41 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
+// Add request tracking for cancellation
+const activeRequests = {
+  analyze: new Map(),
+  optimizeProfile: new Map()
+};
+
+// Helper function to generate request IDs
+function generateRequestId() {
+  return Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
+}
+
+// Helper function to register a request with cancellation capability
+function registerRequest(requestType, requestId, abortController) {
+  activeRequests[requestType].set(requestId, {
+    abortController,
+    timestamp: Date.now()
+  });
+  
+  // Auto-cleanup after 10 minutes to prevent memory leaks
+  setTimeout(() => {
+    if (activeRequests[requestType].has(requestId)) {
+      activeRequests[requestType].delete(requestId);
+    }
+  }, 10 * 60 * 1000);
+  
+  return requestId;
+}
+
 app.post('/analyze', (req, res) => {
+  const requestId = generateRequestId();
+  const abortController = new AbortController();
+  
+  // Register this request so it can be cancelled
+  registerRequest('analyze', requestId, abortController);
+  
   upload.any()(req, res, async function(err) {
     if (err) {
       if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
@@ -452,15 +487,26 @@ app.post('/analyze', (req, res) => {
       // Map each file to a promise that resolves with its analysis result or throws an error
       const analysisPromises = req.files.map(async (file) => {
         try {
+          // Check if request has been cancelled
+          if (abortController.signal.aborted) {
+            throw new Error("Request cancelled");
+          }
+          
           const buffer = file.buffer;
           const featData = await extractFeatures(buffer, profileContext);
+          
+          // Check again if request has been cancelled
+          if (abortController.signal.aborted) {
+            throw new Error("Request cancelled");
+          }
+          
           const score = Math.round(compositeScore(featData) * 100);
           const feedback = await generateFeedback(featData, score, buffer);
 
           // On success, return the data object directly
           return {
             score,
-            feedback, // This is now an object with good_points and improvement_points
+            feedback,
             features: featData.features,
             assessment: featData.assessment,
             photoType: featData.photoType
@@ -473,6 +519,9 @@ app.post('/analyze', (req, res) => {
       });
 
       const settledResults = await Promise.allSettled(analysisPromises);
+
+      // Clean up the request from tracking
+      activeRequests.analyze.delete(requestId);
 
       // Process the results from Promise.allSettled
       const results = settledResults.map((result, index) => {
@@ -513,8 +562,10 @@ app.post('/analyze', (req, res) => {
       // Calculate overall profile score
       const profileScore = calculateOverallProfileScore(scores, photoTypes);
 
+      // Include the requestId in the response
       res.json({
         version: "v1.2",
+        requestId,
         scores,
         feedback: {
           good_points: goodFeedback,
@@ -528,6 +579,9 @@ app.post('/analyze', (req, res) => {
       });
 
     } catch (err) {
+      // Clean up the request from tracking
+      activeRequests.analyze.delete(requestId);
+      
       console.error("Server error in /analyze:", err);
       res.status(500).json({
         error: 'analysis-failed',
@@ -731,6 +785,13 @@ Focus on making objective selections based on technical quality and dating profi
 
 app.post('/optimize-profile', (req, res) => {
   console.log("Received request to /optimize-profile");
+  
+  const requestId = generateRequestId();
+  const abortController = new AbortController();
+  
+  // Register this request so it can be cancelled
+  registerRequest('optimizeProfile', requestId, abortController);
+  
   upload.any()(req, res, async function(err) {
     if (err) {
       console.error(`Upload error: ${err.message}`);
@@ -761,6 +822,11 @@ app.post('/optimize-profile', (req, res) => {
     }
 
     try {
+      // Check if request has been cancelled
+      if (abortController.signal.aborted) {
+        throw new Error("Request cancelled");
+      }
+      
       // Skip detailed analysis and just prepare the images for AI selection
       const imagesForSelection = req.files.map((file, index) => ({
         index: index,
@@ -769,6 +835,14 @@ app.post('/optimize-profile', (req, res) => {
       }));
       
       const { optimalOrder, improvementSteps, suggestedPrompts, suggestedBio } = await getAISelectedOrderAndFeedback(imagesForSelection, profileContext);
+
+      // Check if request has been cancelled
+      if (abortController.signal.aborted) {
+        throw new Error("Request cancelled");
+      }
+
+      // Clean up the request from tracking
+      activeRequests.optimizeProfile.delete(requestId);
 
       // Ensure we have at least one image in the optimal order
       let finalOrder = optimalOrder;
@@ -786,8 +860,10 @@ app.post('/optimize-profile', (req, res) => {
       const profileScore = Math.min(100, 70 + finalOrder.length * 5); // Simple placeholder calculation
       console.log(`Calculated profile score: ${profileScore}`);
 
+      // Include the requestId in the response
       const response = {
         version: "v2.0-AI-Image-Selection-With-Prompts-And-Bio",
+        requestId,
         selectedImages: finalOrder.map(index => ({
           originalIndex: index,
           filename: req.files[index]?.originalname || `image_${index}`
@@ -803,6 +879,9 @@ app.post('/optimize-profile', (req, res) => {
       res.json(response);
 
     } catch (err) {
+      // Clean up the request from tracking
+      activeRequests.optimizeProfile.delete(requestId);
+      
       console.error("Server error in /optimize-profile:", err);
       console.error("Error stack:", err.stack);
       
@@ -834,6 +913,7 @@ app.post('/optimize-profile', (req, res) => {
       console.log("Using fallback selection with first image due to error");
       res.json({
         version: "v2.0-AI-Image-Selection-With-Prompts-And-Bio",
+        requestId,
         selectedImages: fallbackSelection,
         improvementSteps: [
           {
@@ -920,9 +1000,69 @@ function calculateOverallProfileScore(scores, photoTypes) {
   return Math.min(100, Math.max(10, Math.round(finalScore)));
 }
 
+// New endpoint to cancel an analyze request
+app.post('/cancel-analyze', (req, res) => {
+  const { requestId } = req.body;
+  
+  if (!requestId) {
+    return res.status(400).json({ error: 'Missing requestId parameter' });
+  }
+  
+  const request = activeRequests.analyze.get(requestId);
+  
+  if (!request) {
+    return res.status(404).json({ error: 'Request not found or already completed' });
+  }
+  
+  try {
+    // Abort the request
+    request.abortController.abort();
+    
+    // Remove from active requests
+    activeRequests.analyze.delete(requestId);
+    
+    console.log(`Cancelled analyze request: ${requestId}`);
+    return res.json({ success: true, message: 'Request cancelled successfully' });
+  } catch (error) {
+    console.error(`Error cancelling analyze request ${requestId}:`, error);
+    return res.status(500).json({ error: 'Failed to cancel request', details: error.message });
+  }
+});
+
+// New endpoint to cancel an optimize-profile request
+app.post('/cancel-optimize-profile', (req, res) => {
+  const { requestId } = req.body;
+  
+  if (!requestId) {
+    return res.status(400).json({ error: 'Missing requestId parameter' });
+  }
+  
+  const request = activeRequests.optimizeProfile.get(requestId);
+  
+  if (!request) {
+    return res.status(404).json({ error: 'Request not found or already completed' });
+  }
+  
+  try {
+    // Abort the request
+    request.abortController.abort();
+    
+    // Remove from active requests
+    activeRequests.optimizeProfile.delete(requestId);
+    
+    console.log(`Cancelled optimize-profile request: ${requestId}`);
+    return res.json({ success: true, message: 'Request cancelled successfully' });
+  } catch (error) {
+    console.error(`Error cancelling optimize-profile request ${requestId}:`, error);
+    return res.status(500).json({ error: 'Failed to cancel request', details: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`AI Profile Backend running on port ${PORT}`);
   console.log(`API endpoints:`);
   console.log(`- POST /analyze: Analyze individual photos`);
   console.log(`- POST /optimize-profile: Get AI-optimized profile`);
+  console.log(`- POST /cancel-analyze: Cancel an ongoing analyze request`);
+  console.log(`- POST /cancel-optimize-profile: Cancel an ongoing optimize-profile request`);
 });
