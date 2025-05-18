@@ -326,7 +326,7 @@ async function generateFeedback(featuresData, score, imageBuffer) {
 
   const assessment = featuresData.assessment;
 
-  const systemPrompt = `You are a brutally dating photo coach. Your feedback should be extremely concise and actionable, formatted as JSON.
+  const systemPrompt = `You are a honest dating photo coach. Your feedback should be extremely concise and actionable, formatted as JSON.
 The photo has a score of ${score}/100.
 AI's assessment of the photo:
 ${assessment}
@@ -345,9 +345,9 @@ Return ONLY a valid JSON object with two keys: "good_points" and "improvement_po
 - Each point (both good and improvement) MUST be a very short phrase (2-6 words).
 - Examples for points: "👍 Great smile", "👍 Shows personality", "👎 Try different angle", "👎 Too dark", "👎 Blurry background".
 - DO NOT use full sentences. Be direct.
-- For poor photos (score < 50), limit good_points to a MAXIMUM of 2 items, even if technically good
-- For poor photos, focus on the DEAL-BREAKER issues first (expression, approachability, etc.)
-- If the photo gives a negative impression, say so directly with phrases like "Too intimidating" or "Appears unfriendly"
+- If there are no clear improvements, provide at least 1-2 minor suggestions.
+- For strong photos (score > 75), provide at least 3 good points.
+- For weaker photos (score < 50), provide at least 3 improvement points.
 
 Example JSON Output:
 \`\`\`json
